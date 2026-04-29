@@ -6,7 +6,9 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@upstash/redis": "^1.37.0",
     "openai": "^6.35.0",
+    "save": "^2.9.0",
     "telegraf": "^4.16.3"
   }
 }
