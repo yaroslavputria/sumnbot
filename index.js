@@ -118,11 +118,11 @@ bot.catch((err, ctx) => {
 })
 
 // --- SAVE MESSAGES ---
-bot.on('text', async (ctx) => {
+bot.on('text', async (ctx, next) => {
   const chatId = ctx.chat.id
   const text = ctx.message.text
 
-  if (!isUseful(text)) return
+  if (!isUseful(text)) return next()
 
   try {
     const msg = formatMessage(ctx)
