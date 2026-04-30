@@ -4,13 +4,15 @@ import Redis from 'ioredis'
 import http from 'http'
 
 // --- ENV VALIDATION ---
-const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN']
+const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN', 'ALLOWED_CHATS']
 for (const key of requiredEnv) {
   if (!process.env[key]) {
     console.error(`Missing required environment variable: ${key}`)
     process.exit(1)
   }
 }
+
+const ALLOWED_CHATS = new Set(process.env.ALLOWED_CHATS.split(',').map(id => id.trim()))
 
 // --- INIT ---
 const bot = new Telegraf(process.env.BOT_TOKEN)
@@ -32,8 +34,8 @@ redis.on('error', (err) => {
 })
 
 // --- CONFIG ---
-const MAX_MESSAGES = 200
-const CHUNK_SIZE = 25
+const MAX_MESSAGES = 1000
+const CHUNK_SIZE = 50
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -110,6 +112,13 @@ function chunkArray(arr, size) {
 // --- LOGGING ---
 bot.use((ctx, next) => {
   console.log(`Update: ${ctx.updateType} from ${ctx.from?.id}`)
+  return next()
+})
+
+// --- WHITELIST ---
+bot.use((ctx, next) => {
+  const chatId = String(ctx.chat?.id)
+  if (!ALLOWED_CHATS.has(chatId)) return
   return next()
 })
 
