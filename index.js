@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
+import http from 'http'
 
 // --- ENV VALIDATION ---
 const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL']
@@ -199,3 +200,14 @@ console.log('Bot is running')
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
+
+const PORT = process.env.PORT || 3000
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200)
+    res.end('Bot is running')
+  })
+  .listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`)
+  })
