@@ -18,7 +18,17 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
 
-const redis = new Redis(process.env.REDIS_URL)
+const redisUrl = new URL(process.env.REDIS_URL)
+const redis = new Redis({
+  host: redisUrl.hostname,
+  port: Number(redisUrl.port),
+  username: redisUrl.username || 'default',
+  password: redisUrl.password,
+})
+
+redis.on('error', (err) => {
+  console.error('Redis error:', err.message)
+})
 
 // --- CONFIG ---
 const MAX_MESSAGES = 200
