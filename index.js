@@ -194,6 +194,7 @@ bot.command('summary', async (ctx) => {
 })
 
 // --- START ---
+await bot.telegram.deleteWebhook()
 bot.launch()
 
 console.log('Bot is running')
