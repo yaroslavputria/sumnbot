@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
+import http from 'http'
 
 // --- ENV VALIDATION ---
 const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN']
@@ -195,14 +196,11 @@ bot.command('summary', async (ctx) => {
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
-bot.launch({
-  webhook: {
-    domain: process.env.WEBHOOK_DOMAIN,
-    port: PORT,
-  },
-})
+const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
 
-console.log('Bot is running')
+http.createServer(webhookHandler).listen(PORT, () => {
+  console.log(`Bot is running on port ${PORT}`)
+})
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
