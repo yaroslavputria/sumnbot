@@ -113,6 +113,10 @@ bot.use((ctx, next) => {
   return next()
 })
 
+bot.catch((err, ctx) => {
+  console.error(`Handler error for ${ctx.updateType}:`, err)
+})
+
 // --- SAVE MESSAGES ---
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id
@@ -133,6 +137,7 @@ bot.on('text', async (ctx) => {
 
 // --- SUMMARY WITH CHUNKING + AGGREGATION ---
 bot.command('summary', async (ctx) => {
+  console.log('summary command triggered')
   const chatId = ctx.chat.id
   const n = Math.min(Number(ctx.message.text.split(' ')[1]) || 50, MAX_MESSAGES)
 
