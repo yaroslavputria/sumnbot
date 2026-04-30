@@ -1,6 +1,15 @@
 import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
-import { Redis } from '@upstash/redis'
+import Redis from 'ioredis'
+
+// --- ENV VALIDATION ---
+const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL']
+for (const key of requiredEnv) {
+  if (!process.env[key]) {
+    console.error(`Missing required environment variable: ${key}`)
+    process.exit(1)
+  }
+}
 
 // --- INIT ---
 const bot = new Telegraf(process.env.BOT_TOKEN)
@@ -9,10 +18,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-})
+const redis = new Redis(process.env.REDIS_URL)
 
 // --- CONFIG ---
 const MAX_MESSAGES = 200
@@ -76,6 +82,7 @@ function formatMessage(ctx) {
 
 function isUseful(text) {
   if (!text) return false
+  if (text.startsWith('/')) return false
   if (text.length < 3) return false
   if (/^(ок|ага|👍|\+|yes|no)$/i.test(text)) return false
   return true
@@ -96,66 +103,89 @@ bot.on('text', async (ctx) => {
 
   if (!isUseful(text)) return
 
-  const msg = formatMessage(ctx)
-
-  await redis.rpush(`chat:${chatId}`, msg)
-  await redis.ltrim(`chat:${chatId}`, -MAX_MESSAGES, -1)
+  try {
+    const msg = formatMessage(ctx)
+    const pipeline = redis.pipeline()
+    pipeline.rpush(`chat:${chatId}`, msg)
+    pipeline.ltrim(`chat:${chatId}`, -MAX_MESSAGES, -1)
+    await pipeline.exec()
+  } catch (err) {
+    console.error('Failed to save message:', err)
+  }
 })
 
 // --- SUMMARY WITH CHUNKING + AGGREGATION ---
 bot.command('summary', async (ctx) => {
   const chatId = ctx.chat.id
-  const n = Number(ctx.message.text.split(' ')[1]) || 50
+  const n = Math.min(Number(ctx.message.text.split(' ')[1]) || 50, MAX_MESSAGES)
 
-  const messages = await redis.lrange(`chat:${chatId}`, -n, -1)
+  let messages
+  try {
+    messages = await redis.lrange(`chat:${chatId}`, -n, -1)
+  } catch (err) {
+    console.error('Failed to fetch messages from Redis:', err)
+    return ctx.reply('Помилка при отриманні повідомлень. Спробуй пізніше.')
+  }
 
   if (!messages || messages.length === 0) {
     return ctx.reply('Немає даних для самарі')
   }
 
-  // 1. Chunking
-  const chunks = chunkArray(messages, CHUNK_SIZE)
+  const statusMsg = await ctx.reply('Обробляю...')
 
-  // 2. Partial summaries (послідовно для стабільності)
-  const partialSummaries = []
+  try {
+    // 1. Chunking
+    const chunks = chunkArray(messages, CHUNK_SIZE)
 
-  for (const chunk of chunks) {
-    const text = chunk.join('\n')
+    // 2. Partial summaries (послідовно для стабільності)
+    const partialSummaries = []
 
-    const res = await openai.chat.completions.create({
+    for (const chunk of chunks) {
+      const text = chunk.join('\n')
+
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `Зроби самарі цього фрагменту:\n\n${text}`,
+          },
+        ],
+      })
+
+      partialSummaries.push(res.choices[0].message.content)
+    }
+
+    // 3. Final aggregation
+    const finalInput = partialSummaries.join('\n\n')
+
+    const finalRes = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: FINAL_PROMPT },
         {
           role: 'user',
-          content: `Зроби самарі цього фрагменту:\n\n${text}`,
+          content: `Об'єднай ці самарі:\n\n${finalInput}`,
         },
       ],
     })
 
-    partialSummaries.push(res.choices[0].message.content)
+    const finalSummary = finalRes.choices[0].message.content
+
+    await ctx.reply(finalSummary)
+  } catch (err) {
+    console.error('Failed to generate summary:', err)
+    await ctx.reply('Помилка при генерації самарі. Спробуй пізніше.')
+  } finally {
+    await ctx.telegram.deleteMessage(chatId, statusMsg.message_id).catch(() => {})
   }
-
-  // 3. Final aggregation
-  const finalInput = partialSummaries.join('\n\n')
-
-  const finalRes = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: FINAL_PROMPT },
-      {
-        role: 'user',
-        content: `Об'єднай ці самарі:\n\n${finalInput}`,
-      },
-    ],
-  })
-
-  const finalSummary = finalRes.choices[0].message.content
-
-  await ctx.reply(finalSummary)
 })
 
 // --- START ---
 bot.launch()
 
 console.log('Bot is running')
+
+process.once('SIGINT', () => bot.stop('SIGINT'))
+process.once('SIGTERM', () => bot.stop('SIGTERM'))
