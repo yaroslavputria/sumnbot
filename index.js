@@ -1,10 +1,9 @@
 import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
-import http from 'http'
 
 // --- ENV VALIDATION ---
-const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL']
+const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN']
 for (const key of requiredEnv) {
   if (!process.env[key]) {
     console.error(`Missing required environment variable: ${key}`)
@@ -194,21 +193,16 @@ bot.command('summary', async (ctx) => {
 })
 
 // --- START ---
-await bot.telegram.deleteWebhook()
-bot.launch()
+const PORT = Number(process.env.PORT) || 3000
+
+bot.launch({
+  webhook: {
+    domain: process.env.WEBHOOK_DOMAIN,
+    port: PORT,
+  },
+})
 
 console.log('Bot is running')
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
-
-const PORT = process.env.PORT || 3000
-
-http
-  .createServer((req, res) => {
-    res.writeHead(200)
-    res.end('Bot is running')
-  })
-  .listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`)
-  })
