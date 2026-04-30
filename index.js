@@ -107,6 +107,12 @@ function chunkArray(arr, size) {
   return chunks
 }
 
+// --- LOGGING ---
+bot.use((ctx, next) => {
+  console.log(`Update: ${ctx.updateType} from ${ctx.from?.id}`)
+  return next()
+})
+
 // --- SAVE MESSAGES ---
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id
