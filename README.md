@@ -1,4 +1,4 @@
-# sumnbot
+# sumnbot — [@sum_n_bot](https://t.me/sum_n_bot)
 
 A private Telegram bot for group chats. Summarizes conversations, answers questions, sets reminders, and roasts members — all in Ukrainian.
 
