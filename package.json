@@ -1,7 +1,12 @@
 {
   "name": "sumnbot",
   "version": "1.0.0",
+  "description": "Private Telegram bot for group chat summaries, Q&A and reminders",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js"
   },
