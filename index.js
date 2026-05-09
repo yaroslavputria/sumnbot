@@ -218,8 +218,9 @@ bot.command('summary', async (ctx) => {
 
 // --- ASK ---
 bot.command('ask', async (ctx) => {
-  const question = ctx.message.text.replace(/^\/ask\s*/i, '').trim()
-
+  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
+  const question = ctx.message.text.slice(cmdLength).trim()
+  console.log('Asked question:', question)
   if (!question) {
     return ctx.reply('Вкажи питання після команди. Наприклад: /ask що таке JWT?')
   }
