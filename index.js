@@ -118,8 +118,11 @@ bot.use((ctx, next) => {
 // --- WHITELIST ---
 bot.use((ctx, next) => {
   const chatId = String(ctx.chat?.id)
-  if (!ALLOWED_CHATS.has(chatId)) return
-  return next()
+  if (ALLOWED_CHATS.has(chatId)) return next()
+
+  if (ctx.message?.text?.startsWith('/')) {
+    return ctx.reply('Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.')
+  }
 })
 
 bot.catch((err, ctx) => {
@@ -252,7 +255,8 @@ bot.command('help', (ctx) => {
     'Доступні команди:\n' +
     '/summary [n] — самарі останніх N повідомлень (за замовчуванням 50, максимум 1000)\n' +
     '/ask <питання> — коротка відповідь по суті\n' +
-    '/help — показати цей список'
+    '/help — показати цей список\n\n' +
+    'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
 })
 
