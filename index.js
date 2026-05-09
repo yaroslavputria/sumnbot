@@ -213,11 +213,45 @@ bot.command('summary', async (ctx) => {
   }
 })
 
+// --- ASK ---
+bot.command('ask', async (ctx) => {
+  const question = ctx.message.text.replace(/^\/ask\s*/i, '').trim()
+
+  if (!question) {
+    return ctx.reply('Вкажи питання після команди. Наприклад: /ask що таке JWT?')
+  }
+
+  const statusMsg = await ctx.reply('Думаю...')
+
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Відповідай коротко і по суті. Лише найголовніше — без вступів, висновків і зайвих слів. ' +
+            'Максимум 3-5 речень або маркований список з 3-5 пунктів.',
+        },
+        { role: 'user', content: question },
+      ],
+    })
+
+    await ctx.reply(res.choices[0].message.content)
+  } catch (err) {
+    console.error('Failed to answer question:', err)
+    await ctx.reply('Помилка при генерації відповіді. Спробуй пізніше.')
+  } finally {
+    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {})
+  }
+})
+
 // --- HELP ---
 bot.command('help', (ctx) => {
   ctx.reply(
     'Доступні команди:\n' +
     '/summary [n] — самарі останніх N повідомлень (за замовчуванням 50, максимум 1000)\n' +
+    '/ask <питання> — коротка відповідь по суті\n' +
     '/help — показати цей список'
   )
 })
@@ -227,6 +261,7 @@ const PORT = Number(process.env.PORT) || 3000
 
 await bot.telegram.setMyCommands([
   { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
+  { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке AWD?)' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 
