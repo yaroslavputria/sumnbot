@@ -213,8 +213,22 @@ bot.command('summary', async (ctx) => {
   }
 })
 
+// --- HELP ---
+bot.command('help', (ctx) => {
+  ctx.reply(
+    'Доступні команди:\n' +
+    '/summary [n] — самарі останніх N повідомлень (за замовчуванням 50, максимум 1000)\n' +
+    '/help — показати цей список'
+  )
+})
+
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
+
+await bot.telegram.setMyCommands([
+  { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
+  { command: 'help', description: 'Список доступних команд' },
+])
 
 const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
 
