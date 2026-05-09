@@ -306,6 +306,63 @@ bot.command('remind', async (ctx) => {
   await ctx.reply(`Нагадаю о ${localTime}: ${parsed.text}`)
 })
 
+// --- ROAST ---
+bot.command('roast', async (ctx) => {
+  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
+  const args = ctx.message.text.slice(cmdLength).trim().split(/\s+/)
+  const rawUsername = args[0]?.replace(/^@/, '')
+  const n = Math.min(Number(args[1]) || 50, MAX_MESSAGES)
+
+  if (!rawUsername) {
+    return ctx.reply('Вкажи юзернейм. Наприклад: /roast @username або /roast username 100')
+  }
+
+  let allMessages
+  try {
+    allMessages = await redis.lrange(`chat:${ctx.chat.id}`, 0, -1)
+  } catch (err) {
+    console.error('Failed to fetch messages for roast:', err)
+    return ctx.reply('Помилка при отриманні повідомлень. Спробуй пізніше.')
+  }
+
+  const userMessages = allMessages
+    .filter(m => m.toLowerCase().startsWith(`${rawUsername.toLowerCase()}: `))
+    .slice(-n)
+
+  if (userMessages.length === 0) {
+    return ctx.reply(`Не знайшов повідомлень від @${rawUsername} в історії чату.`)
+  }
+
+  const statusMsg = await ctx.reply('Готую роаст... 🔥')
+
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Ти безжальний майстер роасту. На основі повідомлень людини зроби найжорсткіший персональний роаст. ' +
+            'Жодної пощади, жодних загальних фраз — тільки конкретика з переписки. ' +
+            'Знайди патерни, суперечності, дивні звички, безглузді думки — і рознеси їх вщент. ' +
+            'Можна вживати лайку. Роаст має бути смішним і безжальним одночасно.',
+        },
+        {
+          role: 'user',
+          content: `Ось ${userMessages.length} повідомлень від ${rawUsername}:\n\n${userMessages.join('\n')}`,
+        },
+      ],
+    })
+
+    await ctx.reply(res.choices[0].message.content)
+  } catch (err) {
+    console.error('Failed to generate roast:', err)
+    await ctx.reply('Помилка при генерації роасту. Спробуй пізніше.')
+  } finally {
+    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {})
+  }
+})
+
 // --- HELP ---
 bot.command('help', (ctx) => {
   ctx.reply(
@@ -313,6 +370,7 @@ bot.command('help', (ctx) => {
     '/summary [n] — самарі останніх N повідомлень (за замовчуванням 50, максимум 1000)\n' +
     '/ask <питання> — коротка відповідь по суті\n' +
     '/remind <час + текст> — нагадування в зазначений час\n' +
+    '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -343,6 +401,7 @@ await bot.telegram.setMyCommands([
   { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
   { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке JWT?)' },
   { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
+  { command: 'roast', description: 'Роаст юзера за його повідомленнями (напр. /roast @username)' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 
