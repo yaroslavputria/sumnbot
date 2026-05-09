@@ -86,6 +86,12 @@ const FINAL_PROMPT = `
 - кожен пункт: суть + короткий дотепний коментар (за потреби)
 `
 
+const REMIND_PARSE_PROMPT = `Визнач з повідомлення: коли нагадати (у форматі UTC ISO 8601) і текст нагадування.
+Поточний час у Києві буде вказано у запиті.
+Відповідай ТІЛЬКИ валідним JSON без коментарів:
+{"datetime": "2025-05-09T15:00:00.000Z", "text": "текст нагадування"}
+Якщо час незрозумілий: {"error": "час не розпізнано"}`
+
 // --- HELPERS ---
 function formatMessage(ctx) {
   const user =
@@ -250,23 +256,93 @@ bot.command('ask', async (ctx) => {
   }
 })
 
+// --- REMIND ---
+bot.command('remind', async (ctx) => {
+  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
+  const input = ctx.message.text.slice(cmdLength).trim()
+
+  if (!input) {
+    return ctx.reply('Вкажи час і текст. Наприклад: /remind через 30 хвилин випити таблетку')
+  }
+
+  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    dateStyle: 'full',
+    timeStyle: 'medium',
+  }).format(new Date())
+
+  let parsed
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: REMIND_PARSE_PROMPT },
+        { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
+      ],
+    })
+    parsed = JSON.parse(res.choices[0].message.content)
+  } catch {
+    return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
+  }
+
+  if (parsed.error) {
+    return ctx.reply('Не зрозумів коли нагадати. Спробуй написати точніше, наприклад: "через 20 хвилин" або "о 18:00".')
+  }
+
+  const fireAt = new Date(parsed.datetime).getTime()
+  if (isNaN(fireAt) || fireAt <= Date.now()) {
+    return ctx.reply('Час нагадування вже минув або невалідний. Вкажи майбутній час.')
+  }
+
+  const member = JSON.stringify({ chatId: ctx.chat.id, text: parsed.text })
+  await redis.zadd('reminders', fireAt, member)
+
+  const localTime = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: 'Europe/Kyiv',
+    timeStyle: 'short',
+    dateStyle: 'short',
+  }).format(new Date(fireAt))
+
+  await ctx.reply(`Нагадаю о ${localTime}: ${parsed.text}`)
+})
+
 // --- HELP ---
 bot.command('help', (ctx) => {
   ctx.reply(
     'Доступні команди:\n' +
     '/summary [n] — самарі останніх N повідомлень (за замовчуванням 50, максимум 1000)\n' +
     '/ask <питання> — коротка відповідь по суті\n' +
+    '/remind <час + текст> — нагадування в зазначений час\n' +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
 })
+
+// --- REMINDER POLLER ---
+setInterval(async () => {
+  try {
+    const now = Date.now()
+    const due = await redis.zrangebyscore('reminders', 0, now)
+    if (!due.length) return
+
+    await redis.zremrangebyscore('reminders', 0, now)
+
+    for (const member of due) {
+      const { chatId, text } = JSON.parse(member)
+      await bot.telegram.sendMessage(chatId, `🔔 Нагадування: ${text}`)
+    }
+  } catch (err) {
+    console.error('Reminder poller error:', err)
+  }
+}, 30_000)
 
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
 await bot.telegram.setMyCommands([
   { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
-  { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке AWD?)' },
+  { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке JWT?)' },
+  { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 
