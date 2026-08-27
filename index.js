@@ -398,11 +398,18 @@ setInterval(async () => {
     const due = await redis.zrangebyscore('reminders', 0, now)
     if (!due.length) return
 
-    await redis.zremrangebyscore('reminders', 0, now)
-
     for (const member of due) {
-      const { chatId, text } = JSON.parse(member)
-      await bot.telegram.sendMessage(chatId, `🔔 Нагадування: ${text}`)
+      // zrem is the atomic claim — only one poller tick can win a member,
+      // and members added after the read above are never touched
+      const claimed = await redis.zrem('reminders', member)
+      if (!claimed) continue
+
+      try {
+        const { chatId, text } = JSON.parse(member)
+        await bot.telegram.sendMessage(chatId, `🔔 Нагадування: ${text}`)
+      } catch (err) {
+        console.error('Failed to deliver reminder:', err)
+      }
     }
   } catch (err) {
     console.error('Reminder poller error:', err)
