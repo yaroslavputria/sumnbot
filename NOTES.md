@@ -21,7 +21,7 @@ there is no room for a second always-on service on the same account.
 ## Reminder delivery is at-most-once
 
 The poller claims each member with `zrem` before sending
-(`index.js:438`). If the send then fails, that reminder is gone — no
+(`index.js:455`). If the send then fails, that reminder is gone — no
 retry. This is intentional: the alternative is a retry queue that loops
 forever on a permanently blocked chat. Failures are logged.
 
@@ -93,14 +93,14 @@ aggressive against the shield. Not worth it.
 ## Prompt injection
 
 Stored messages are concatenated raw into the user role at
-`index.js:225`, `index.js:242` and `index.js:397` with no delimiting or
+`index.js:240`, `index.js:257` and `index.js:412` with no delimiting or
 escaping. A group member can post text that the summariser or roaster
 reads as instructions. Low stakes for a private chat bot, but it is a
 real channel.
 
 ## Smaller things
 
-- `ALLOWED_CHATS` is parsed once at boot (`index.js:31`) — changing the
+- `ALLOWED_CHATS` is parsed once at boot (`index.js:37`) — changing the
   allowlist needs a restart.
 - `/roast` takes a single whitespace-delimited token as the username,
   but users without an `@username` are stored as `"First Last"`, so they

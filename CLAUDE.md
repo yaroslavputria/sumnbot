@@ -26,9 +26,9 @@ everything else.
 
 Registration order in `index.js` decides behaviour:
 
-1. logging — `index.js:153`
-2. chat whitelist — `index.js:159`
-3. text persistence — `index.js:173`
+1. logging — `index.js:168`
+2. chat whitelist — `index.js:174`
+3. text persistence — `index.js:188`
 
 Two subtleties that are easy to break:
 
@@ -36,7 +36,7 @@ Two subtleties that are easy to break:
   returns **without** `next()` for anything else, so non-allowed chats
   are silently dropped and never stored.
 - `bot.on('text')` calls `isUseful(text)`, which returns `false` for
-  anything starting with `/`, hitting `return next()` at `index.js:177`.
+  anything starting with `/`, hitting `return next()` at `index.js:192`.
   **That early return is the only reason the `bot.command(...)` handlers
   registered further down the file are ever reached.** Plain text is
   saved and deliberately does *not* call `next()`. Editing `isUseful` or
@@ -51,7 +51,7 @@ hand:
 | Key | Type | Shape |
 |---|---|---|
 | `chat:<chatId>` | LIST | `"username: message text"`. No id, timestamp, or reply threading. Falls back to `"First Last"` when the user has no `@username`. `rpush` + `ltrim -1000..-1`; read by `/summary` (tail N) and `/roast` (whole list). |
-| `reminders` | ZSET | member `JSON.stringify({chatId, text})`, score = UTC epoch ms. Polled at `index.js:429`. |
+| `reminders` | ZSET | member `JSON.stringify({chatId, text})`, score = UTC epoch ms. Polled at `index.js:446`. |
 | `coins:onsale` | SET | product ids currently in the shop catalog. **Replaced** each sweep, so a coin that sells out and returns is reported again. |
 | `coins:banners` | SET | banner links already announced. **Accumulates**, so a banner rotating back into the slider does not re-alert. |
 | `coins:subs` | SET | chat ids opted into coin alerts via `/coins_on`. |
@@ -69,11 +69,11 @@ otherwise a fresh deploy announces the whole catalog at once.
 
 ## Boot
 
-Fail-fast env validation → `process.exit(1)` (`index.js:18-29`).
+Fail-fast env validation → `process.exit(1)` (`index.js:19-35`).
 `WEBHOOK_DOMAIN` is required only in webhook mode. No dotenv: `--env-file`
 locally, Render's dashboard in production.
 
-Clients are constructed at import time (`index.js:34-50`), which is why
+Clients are constructed at import time (`index.js:40-56`), which is why
 nothing in `index.js` is importable from a test. `REDIS_URL` is
 hand-parsed into host/port/username/password with a `|| 'default'`
 username — a Redis ACL fix, not an accident. Don't collapse it back into
@@ -81,20 +81,20 @@ passing the URL string.
 
 ## Commands
 
-`/summary` `index.js:191` · `/ask` `index.js:259` · `/remind`
-`index.js:320` · `/roast` `index.js:356` · `/help` `index.js:412` ·
-`/coin_watch` `index.js:535` · `/coin_unwatch` `index.js:586` ·
-`/coins_on` `index.js:605` · `/coins_off` `index.js:610` · `/coins`
-`index.js:615`.
+`/summary` `index.js:206` · `/ask` `index.js:274` · `/remind`
+`index.js:335` · `/roast` `index.js:371` · `/help` `index.js:427` ·
+`/coin_watch` `index.js:552` · `/coin_unwatch` `index.js:605` ·
+`/coins_on` `index.js:626` · `/coins_off` `index.js:633` · `/coins`
+`index.js:638`.
 
-Three pollers, all `setInterval`: reminders `index.js:429`, the coin
-sweep `index.js:634`, the coin watch `index.js:659`.
+Three pollers, all `setInterval`: reminders `index.js:446`, the coin
+sweep `index.js:667`, the coin watch `index.js:707`.
 
-`setMyCommands` **must be updated whenever a command is added or
+`setMyCommands` (`index.js:759`) **must be updated whenever a command is added or
 renamed** — it drives Telegram's autocomplete menu.
 
 `/summary` is map-reduce: chunk 50 → one call per chunk with
-`SYSTEM_PROMPT` → merge with `FINAL_PROMPT` (`index.js:211-247`). The
+`SYSTEM_PROMPT` → merge with `FINAL_PROMPT` (`index.js:226-262`). The
 per-chunk loop is sequential on purpose ("послідовно для стабільності").
 `/summary 1000` is 21 sequential OpenAI calls.
 
@@ -131,9 +131,9 @@ the code alone:
 
 Two clocks, deliberately:
 
-1. **Sweep, every 4 hours** (`index.js:634`) — diffs the catalog and the
+1. **Sweep, every 4 hours** (`index.js:667`) — diffs the catalog and the
    homepage banners. Enough to notice an announcement days ahead.
-2. **Burst** (`index.js:659`) — a coin flips to buyable at **10:00** and
+2. **Burst** (`index.js:707`) — a coin flips to buyable at **10:00** and
    sells out in seconds, so a sweep can never catch it. `/coin_watch`
    arms a window; five minutes before, the chat gets a heads-up, then
    `watchUntilInStock` polls that one product page every 2s.
@@ -152,11 +152,11 @@ Render's free tier does — see [NOTES.md](NOTES.md).
 ## Conventions
 
 
-- One model, via the `MODEL` constant (`index.js:55`); timezone via
-  `TIMEZONE` (`index.js:56`). No temperature, max_tokens, streaming or
+- One model, via the `MODEL` constant (`index.js:61`); timezone via
+  `TIMEZONE` (`index.js:62`). No temperature, max_tokens, streaming or
   retry config anywhere. `/remind` is the only call using
   `response_format`.
-- Prompts are inline Ukrainian template literals (`index.js:74-150`)
+- Prompts are inline Ukrainian template literals (`index.js:89-165`)
   plus inline system strings in `/ask` and `/roast`. Ukrainian profanity
   is deliberately licensed in three of them — keep it.
 - No `parse_mode` is ever set. That is what makes unescaped LLM output
