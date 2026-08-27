@@ -3,22 +3,25 @@
 Things found while reviewing the codebase that are deliberately not
 fixed. Ordered roughly by how likely they are to bite.
 
-## Render's free tier sleeps — reminders fire late
+## Render's free tier sleeps — keep-alive is required, not optional
 
 Free Render web services spin down after ~15 minutes without inbound
-traffic. The reminder poller is an in-process `setInterval`
-(`index.js:377`), so **it does not run while the instance is asleep**.
-A reminder due at 03:00 in a quiet chat fires whenever the next message
-wakes the service, not at 03:00.
+traffic. All three pollers are in-process `setInterval`s, so **none of
+them run while the instance is asleep**.
 
-Worth confirming against the actual Render plan. If it is the free tier,
-`/remind` is unreliable by construction and needs either an external
-pinger or scheduling that lives off the instance. Biggest open item.
+`GET /health` exists for this: point a free external pinger
+(cron-job.org, UptimeRobot) at it every 5 minutes. **Without that pinger
+the coin monitor is worthless** — a 10:00 drop in a quiet overnight chat
+is exactly the case the instance will be asleep for, and reminders stay
+late too.
+
+This uses roughly 730 of Render's 750 free instance-hours per month, so
+there is no room for a second always-on service on the same account.
 
 ## Reminder delivery is at-most-once
 
 The poller claims each member with `zrem` before sending
-(`index.js:386`). If the send then fails, that reminder is gone — no
+(`index.js:438`). If the send then fails, that reminder is gone — no
 retry. This is intentional: the alternative is a retry queue that loops
 forever on a permanently blocked chat. Failures are logged.
 
@@ -34,17 +37,46 @@ timeouts. The `ALLOWED_CHATS` whitelist is the only abuse control, and
 chat can loop `/summary 1000` — 21 model calls each — against the
 OpenAI balance.
 
+## The coin monitor depends on a shield we do not control
+
+The shop is behind BunnyCDN Shield. It currently lets us through on the
+strength of a browser-like header set (`nbu.js`), with no JS challenge.
+That is a standing dependency on someone else's configuration: if they
+tighten it, every coin feature stops working at once.
+
+Failures are deliberately quiet — logged, never sent to the chat — so a
+shield change degrades into silence rather than noise. The flip side is
+that **silence looks identical to "no new coins"**. If alerts go quiet
+for a suspiciously long stretch, check the logs before assuming nothing
+has been issued. A periodic "monitor still alive" heartbeat would fix
+the ambiguity and is not implemented.
+
+The fixtures under `fixtures/` pin the markup the shop served in August
+2026. If the site is redesigned, `npm test` fails — that is the intended
+early warning.
+
+## The drop alert is a few seconds behind, by construction
+
+`watchUntilInStock` polls every 2s and Telegram delivery adds its own
+latency, so the "it is live" message lands roughly 2-3s after a coin
+becomes buyable. Against a window measured in seconds that may be too
+late to win on its own. The five-minute heads-up is the part that
+actually helps; the live ping is confirmation.
+
+Polling faster would shrink the gap slightly and be markedly more
+aggressive against the shield. Not worth it.
+
 ## Prompt injection
 
 Stored messages are concatenated raw into the user role at
-`index.js:186`, `index.js:203` and `index.js:349` with no delimiting or
+`index.js:225`, `index.js:242` and `index.js:397` with no delimiting or
 escaping. A group member can post text that the summariser or roaster
 reads as instructions. Low stakes for a private chat bot, but it is a
 real channel.
 
 ## Smaller things
 
-- `ALLOWED_CHATS` is parsed once at boot (`index.js:20`) — changing the
+- `ALLOWED_CHATS` is parsed once at boot (`index.js:31`) — changing the
   allowlist needs a restart.
 - `/roast` takes a single whitespace-delimited token as the username,
   but users without an `@username` are stored as `"First Last"`, so they
