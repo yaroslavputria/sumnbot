@@ -23,18 +23,40 @@ A private Telegram bot for group chats. Summarizes conversations, answers questi
 
 | Variable | Description |
 |---|---|
+| `BOT_MODE` | `polling` for local dev, `webhook` (default) for production |
 | `BOT_TOKEN` | Telegram bot token |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `REDIS_URL` | Redis connection URL |
-| `WEBHOOK_DOMAIN` | Public domain for the webhook |
 | `ALLOWED_CHATS` | Comma-separated list of allowed chat IDs |
-| `PORT` | HTTP server port (default 3000) |
+| `WEBHOOK_DOMAIN` | Public domain for the webhook (webhook mode only) |
+| `PORT` | HTTP server port (default 3000, webhook mode only) |
 
 ## Running
 
 ```bash
 npm start
 ```
+
+Runs in webhook mode and needs a publicly reachable `WEBHOOK_DOMAIN`.
+
+## Local development
+
+Polling mode needs no public URL, so the bot runs entirely on your machine.
+
+**Use a separate bot token.** Telegram allows only one delivery method per token,
+and polling deletes the webhook — starting a local instance with the production
+token takes the live bot offline until the next deploy. Create a second bot with
+[@BotFather](https://t.me/BotFather) for development.
+
+```bash
+docker run -d --name sumnbot-redis -p 6379:6379 redis:alpine
+cp .env.example .env      # BOT_MODE=polling, dev bot token, test chat ID
+npm install
+npm run dev
+```
+
+`ALLOWED_CHATS` should hold the ID of a private test group that the dev bot is a
+member of. Requires Node 20.6+ for `--env-file`.
 
 ## Access
 

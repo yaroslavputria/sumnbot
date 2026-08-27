@@ -4,7 +4,11 @@ import Redis from 'ioredis'
 import http from 'http'
 
 // --- ENV VALIDATION ---
-const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN', 'ALLOWED_CHATS']
+const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
+
+const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'ALLOWED_CHATS']
+if (BOT_MODE === 'webhook') requiredEnv.push('WEBHOOK_DOMAIN')
+
 for (const key of requiredEnv) {
   if (!process.env[key]) {
     console.error(`Missing required environment variable: ${key}`)
@@ -416,11 +420,17 @@ await bot.telegram.setMyCommands([
   { command: 'help', description: 'Список доступних команд' },
 ])
 
-const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
+if (BOT_MODE === 'polling') {
+  // launch() resolves only when the bot stops, so it must not be awaited.
+  // It also calls deleteWebhook — never run this with the production token.
+  bot.launch(() => console.log('Bot is running in polling mode'))
+} else {
+  const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
 
-http.createServer(webhookHandler).listen(PORT, () => {
-  console.log(`Bot is running on port ${PORT}`)
-})
+  http.createServer(webhookHandler).listen(PORT, () => {
+    console.log(`Bot is running in webhook mode on port ${PORT}`)
+  })
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
