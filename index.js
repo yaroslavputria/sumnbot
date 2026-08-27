@@ -3,7 +3,7 @@ import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
 import { formatMessage, isUseful, chunkArray, commandArgs, replyLong, withHealthCheck } from './helpers.js'
-import { fetchPage, parseCatalog, diffOnSale, CATALOG_URL } from './nbu.js'
+import { fetchPage, parseCatalog, parseBanners, diffNew, CATALOG_URL, HOME_URL } from './nbu.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
@@ -49,6 +49,8 @@ const TIMEZONE = 'Europe/Kyiv'
 // on the day, so a slow sweep is enough to spot changes
 const COINS_POLL_INTERVAL = 4 * 60 * 60 * 1000
 const COINS_ONSALE_KEY = 'coins:onsale'
+const COINS_SUBS_KEY = 'coins:subs'
+const COINS_BANNERS_KEY = 'coins:banners'
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -375,6 +377,7 @@ bot.command('help', (ctx) => {
     '/remind <час + текст> — нагадування в зазначений час\n' +
     '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
     '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
+    '/coins_on, /coins_off — сповіщення коли монета зʼявляється у продажу\n' +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -418,14 +421,16 @@ async function refreshCoinsOnSale() {
   }
 
   const known = await redis.smembers(COINS_ONSALE_KEY)
-  const { ids, seeding, fresh } = diffOnSale(known, items)
+  const { keys, seeding, fresh } = diffNew(known, items)
 
+  // replace rather than accumulate, so a coin selling out and returning
+  // later is reported again
   const pipeline = redis.pipeline()
   pipeline.del(COINS_ONSALE_KEY)
-  pipeline.sadd(COINS_ONSALE_KEY, ids)
+  pipeline.sadd(COINS_ONSALE_KEY, keys)
   await pipeline.exec()
 
-  if (seeding) console.log(`Seeded coin catalog with ${ids.length} products`)
+  if (seeding) console.log(`Seeded coin catalog with ${keys.length} products`)
 
   return fresh
 }
@@ -433,6 +438,47 @@ async function refreshCoinsOnSale() {
 function formatCoin(coin) {
   return `${coin.name}${coin.price ? ` — ${coin.price}` : ''}\n${coin.url}`
 }
+
+// A failing chat must not stop the rest, same reasoning as the reminder poller
+async function broadcastToSubscribers(text) {
+  const chatIds = await redis.smembers(COINS_SUBS_KEY)
+
+  for (const chatId of chatIds) {
+    try {
+      await bot.telegram.sendMessage(chatId, text)
+    } catch (err) {
+      console.error(`Failed to notify chat ${chatId}:`, err)
+    }
+  }
+}
+
+// New homepage banners are how a sale gets announced, days before the coin
+// actually becomes buyable
+async function findNewBanners() {
+  const banners = parseBanners(await fetchPage(HOME_URL))
+  if (!banners.length) return []
+
+  const known = await redis.smembers(COINS_BANNERS_KEY)
+  const { keys, seeding, fresh } = diffNew(known, banners, b => b.link)
+
+  // accumulate here: a banner rotating out of the slider and back in later
+  // is the same announcement and should not alert twice
+  await redis.sadd(COINS_BANNERS_KEY, keys)
+
+  if (seeding) console.log(`Seeded banners with ${keys.length} entries`)
+
+  return fresh
+}
+
+bot.command('coins_on', async (ctx) => {
+  await redis.sadd(COINS_SUBS_KEY, String(ctx.chat.id))
+  await ctx.reply('Підписав цей чат на сповіщення про монети. Вимкнути — /coins_off')
+})
+
+bot.command('coins_off', async (ctx) => {
+  await redis.srem(COINS_SUBS_KEY, String(ctx.chat.id))
+  await ctx.reply('Більше не надсилатиму сповіщення про монети.')
+})
 
 bot.command('coins', async (ctx) => {
   const statusMsg = await ctx.reply('Дивлюсь що в продажу...')
@@ -456,13 +502,24 @@ bot.command('coins', async (ctx) => {
 setInterval(async () => {
   try {
     const fresh = await refreshCoinsOnSale()
+
     for (const coin of fresh) {
       console.log(`Coin went on sale: ${coin.id} ${coin.name}`)
+      await broadcastToSubscribers(`🪙 Вже у продажу!\n\n${formatCoin(coin)}`)
     }
   } catch (err) {
     // the shop sits behind a shield that can start refusing us at any time;
     // stay quiet and try again next sweep
     console.error('Coin sweep failed:', err)
+  }
+
+  try {
+    for (const banner of await findNewBanners()) {
+      console.log(`New banner: ${banner.link}`)
+      await broadcastToSubscribers(`📣 Новий анонс на сайті НБУ:\n${banner.link}`)
+    }
+  } catch (err) {
+    console.error('Banner sweep failed:', err)
   }
 }, COINS_POLL_INTERVAL)
 
@@ -475,6 +532,8 @@ await bot.telegram.setMyCommands([
   { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
   { command: 'roast', description: 'Роаст юзера за його повідомленнями (напр. /roast @username)' },
   { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
+  { command: 'coins_on', description: 'Підписати чат на сповіщення про монети' },
+  { command: 'coins_off', description: 'Відписати чат від сповіщень про монети' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 

@@ -11,7 +11,7 @@ import {
   parseProduct,
   parseAvailability,
   parseBanners,
-  diffOnSale,
+  diffNew,
 } from './nbu.js'
 
 // Fixtures are unmodified pages captured from the live shop. They exist so a
@@ -165,40 +165,52 @@ test('fetchPage recovers when a retry succeeds', async () => {
   assert.equal(calls, 2)
 })
 
-test('diffOnSale reports nothing on the very first run', () => {
+test('diffNew reports nothing on the very first run', () => {
   const items = parseCatalog(catalog)
-  const { seeding, fresh, ids } = diffOnSale([], items)
+  const { seeding, fresh, keys } = diffNew([], items)
 
   // deploying the feature must not announce all seven existing products
   assert.equal(seeding, true)
   assert.deepEqual(fresh, [])
-  assert.equal(ids.length, 7)
+  assert.equal(keys.length, 7)
 })
 
-test('diffOnSale reports only genuinely new coins', () => {
+test('diffNew reports only genuinely new coins', () => {
   const items = parseCatalog(catalog)
   const known = items.map(i => i.id).filter(id => id !== '1199')
 
-  const { seeding, fresh } = diffOnSale(known, items)
+  const { seeding, fresh } = diffNew(known, items)
 
   assert.equal(seeding, false)
   assert.deepEqual(fresh.map(i => i.id), ['1199'])
   assert.match(fresh[0].name, /Господарська юстиція/)
 })
 
-test('diffOnSale is quiet when nothing changed', () => {
+test('diffNew is quiet when nothing changed', () => {
   const items = parseCatalog(catalog)
-  const { fresh } = diffOnSale(items.map(i => i.id), items)
+  const { fresh } = diffNew(items.map(i => i.id), items)
 
   assert.deepEqual(fresh, [])
 })
 
-test('diffOnSale ignores coins that left the catalog', () => {
+test('diffNew ignores coins that left the catalog', () => {
   const items = parseCatalog(catalog)
   const known = [...items.map(i => i.id), '999999']
 
-  const { fresh, ids } = diffOnSale(known, items)
+  const { fresh, keys } = diffNew(known, items)
 
   assert.deepEqual(fresh, [])
-  assert.ok(!ids.includes('999999'))
+  assert.ok(!keys.includes('999999'))
+})
+
+test('diffNew works on banners keyed by link', () => {
+  const banners = parseBanners(home)
+  const first = diffNew([], banners, b => b.link)
+
+  // the same seeding guarantee must hold for announcements
+  assert.equal(first.seeding, true)
+  assert.deepEqual(first.fresh, [])
+
+  const later = diffNew(first.keys, [...banners, { link: 'https://x/new-coin', image: null }], b => b.link)
+  assert.deepEqual(later.fresh.map(b => b.link), ['https://x/new-coin'])
 })

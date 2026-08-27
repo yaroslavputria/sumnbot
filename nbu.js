@@ -149,16 +149,18 @@ export function parseProduct(html) {
   return null
 }
 
-// Compares a fresh catalog against the ids we already knew about. The very
-// first run has nothing stored, and must report no arrivals — otherwise
-// deploying the feature announces the entire catalog at once.
-export function diffOnSale(knownIds, items) {
-  const seen = new Set(knownIds)
+// Compares a freshly fetched list against what we already knew about, for
+// both catalog products and homepage banners. The very first run has nothing
+// stored and must report no arrivals — otherwise deploying the feature
+// announces the entire catalog at once.
+export function diffNew(known, items, keyOf = item => item.id) {
+  const seen = new Set(known)
+  const seeding = known.length === 0
 
   return {
-    ids: items.map(i => i.id),
-    seeding: knownIds.length === 0,
-    fresh: knownIds.length === 0 ? [] : items.filter(i => !seen.has(i.id)),
+    keys: items.map(keyOf),
+    seeding,
+    fresh: seeding ? [] : items.filter(item => !seen.has(keyOf(item))),
   }
 }
 
