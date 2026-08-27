@@ -9,11 +9,17 @@
   },
   "scripts": {
     "start": "node index.js",
-    "dev": "node --env-file=.env index.js"
+    "dev": "node --env-file=.env index.js",
+    "lint": "eslint ."
   },
   "dependencies": {
     "ioredis": "^5.10.1",
     "openai": "^6.35.0",
     "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0"
   }
 }
