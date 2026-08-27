@@ -290,13 +290,15 @@ bot.command('remind', async (ctx) => {
   try {
     const res = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: REMIND_PARSE_PROMPT },
         { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
       ],
     })
     parsed = JSON.parse(res.choices[0].message.content)
-  } catch {
+  } catch (err) {
+    console.error('Failed to parse reminder time:', err)
     return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
   }
 
@@ -310,7 +312,12 @@ bot.command('remind', async (ctx) => {
   }
 
   const member = JSON.stringify({ chatId: ctx.chat.id, text: parsed.text })
-  await redis.zadd('reminders', fireAt, member)
+  try {
+    await redis.zadd('reminders', fireAt, member)
+  } catch (err) {
+    console.error('Failed to save reminder:', err)
+    return ctx.reply('Помилка при збереженні нагадування. Спробуй пізніше.')
+  }
 
   const localTime = new Intl.DateTimeFormat('uk-UA', {
     timeZone: 'Europe/Kyiv',
