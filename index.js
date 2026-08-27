@@ -41,6 +41,8 @@ redis.on('error', (err) => {
 const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
 const MAX_MESSAGE_LENGTH = 4000
+const MODEL = 'gpt-4o-mini'
+const TIMEZONE = 'Europe/Kyiv'
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -150,6 +152,13 @@ function splitForTelegram(text, limit = MAX_MESSAGE_LENGTH) {
   return parts
 }
 
+// The command entity carries its own length, which is what makes the
+// /cmd@botname form parse correctly in groups
+function commandArgs(ctx) {
+  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
+  return ctx.message.text.slice(cmdLength).trim()
+}
+
 async function replyLong(ctx, text) {
   for (const part of splitForTelegram(text)) {
     await ctx.reply(part)
@@ -196,9 +205,8 @@ bot.on('text', async (ctx, next) => {
 
 // --- SUMMARY WITH CHUNKING + AGGREGATION ---
 bot.command('summary', async (ctx) => {
-  console.log('summary command triggered')
   const chatId = ctx.chat.id
-  const n = Math.min(Number(ctx.message.text.split(' ')[1]) || 50, MAX_MESSAGES)
+  const n = Math.min(Number(commandArgs(ctx)) || 50, MAX_MESSAGES)
 
   let messages
   try {
@@ -225,7 +233,7 @@ bot.command('summary', async (ctx) => {
       const text = chunk.join('\n')
 
       const res = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           {
@@ -242,7 +250,7 @@ bot.command('summary', async (ctx) => {
     const finalInput = partialSummaries.join('\n\n')
 
     const finalRes = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         { role: 'system', content: FINAL_PROMPT },
         {
@@ -265,9 +273,7 @@ bot.command('summary', async (ctx) => {
 
 // --- ASK ---
 bot.command('ask', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const question = ctx.message.text.slice(cmdLength).trim()
-  console.log('Asked question:', question)
+  const question = commandArgs(ctx)
   if (!question) {
     return ctx.reply('Вкажи питання після команди. Наприклад: /ask що таке JWT?')
   }
@@ -276,7 +282,7 @@ bot.command('ask', async (ctx) => {
 
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         {
           role: 'system',
@@ -299,15 +305,14 @@ bot.command('ask', async (ctx) => {
 
 // --- REMIND ---
 bot.command('remind', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const input = ctx.message.text.slice(cmdLength).trim()
+  const input = commandArgs(ctx)
 
   if (!input) {
     return ctx.reply('Вкажи час і текст. Наприклад: /remind через 30 хвилин випити таблетку')
   }
 
   const kyivNow = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
+    timeZone: TIMEZONE,
     dateStyle: 'full',
     timeStyle: 'medium',
   }).format(new Date())
@@ -315,7 +320,7 @@ bot.command('remind', async (ctx) => {
   let parsed
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: REMIND_PARSE_PROMPT },
@@ -346,7 +351,7 @@ bot.command('remind', async (ctx) => {
   }
 
   const localTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
+    timeZone: TIMEZONE,
     timeStyle: 'short',
     dateStyle: 'short',
   }).format(new Date(fireAt))
@@ -356,8 +361,7 @@ bot.command('remind', async (ctx) => {
 
 // --- ROAST ---
 bot.command('roast', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const args = ctx.message.text.slice(cmdLength).trim().split(/\s+/)
+  const args = commandArgs(ctx).split(/\s+/)
   const rawUsername = args[0]?.replace(/^@/, '')
   const n = Math.min(Number(args[1]) || 50, MAX_MESSAGES)
 
@@ -385,7 +389,7 @@ bot.command('roast', async (ctx) => {
 
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         {
           role: 'system',
