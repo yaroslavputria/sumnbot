@@ -57,6 +57,20 @@ export function commandArgs(ctx) {
   return ctx.message.text.slice(cmdLength).trim()
 }
 
+// Render's free tier sleeps after ~15 minutes without traffic, and the
+// in-process pollers sleep with it. An external pinger hits /health to keep
+// the instance awake so reminders and coin alerts stay on time.
+export function withHealthCheck(handler) {
+  return (req, res) => {
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' })
+      return res.end('ok')
+    }
+
+    return handler(req, res)
+  }
+}
+
 export async function replyLong(ctx, text) {
   for (const part of splitForTelegram(text)) {
     await ctx.reply(part)

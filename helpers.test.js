@@ -8,6 +8,7 @@ import {
   splitForTelegram,
   commandArgs,
   replyLong,
+  withHealthCheck,
 } from './helpers.js'
 
 // Telegram sets the command entity's length to the whole "/cmd" or
@@ -100,4 +101,29 @@ test('replyLong sends one message per part', async () => {
   await replyLong(ctx, 'z'.repeat(9000))
   assert.equal(sent.length, 4)
   assert.ok(sent.slice(1).every(p => p.length <= MAX_MESSAGE_LENGTH))
+})
+
+test('withHealthCheck answers /health without touching the webhook handler', () => {
+  let delegated = false
+  const handler = withHealthCheck(() => { delegated = true })
+
+  const written = []
+  const res = {
+    writeHead: (code, headers) => written.push([code, headers]),
+    end: body => written.push(body),
+  }
+  handler({ url: '/health' }, res)
+
+  assert.deepEqual(written, [[200, { 'Content-Type': 'text/plain' }], 'ok'])
+  assert.equal(delegated, false)
+})
+
+test('withHealthCheck delegates every other path to the webhook handler', () => {
+  const seen = []
+  const handler = withHealthCheck((req, res) => seen.push([req.url, res]))
+
+  handler({ url: '/telegraf/secret-path' }, 'RES')
+  handler({ url: '/' }, 'RES')
+
+  assert.deepEqual(seen, [['/telegraf/secret-path', 'RES'], ['/', 'RES']])
 })

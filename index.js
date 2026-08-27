@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
-import { formatMessage, isUseful, chunkArray, commandArgs, replyLong } from './helpers.js'
+import { formatMessage, isUseful, chunkArray, commandArgs, replyLong, withHealthCheck } from './helpers.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
@@ -416,7 +416,7 @@ if (BOT_MODE === 'polling') {
 } else {
   const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
 
-  http.createServer(webhookHandler).listen(PORT, () => {
+  http.createServer(withHealthCheck(webhookHandler)).listen(PORT, () => {
     console.log(`Bot is running in webhook mode on port ${PORT}`)
   })
 }
