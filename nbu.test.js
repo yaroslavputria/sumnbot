@@ -12,6 +12,7 @@ import {
   parseAvailability,
   parseBanners,
   diffNew,
+  watchUntilInStock,
 } from './nbu.js'
 
 // Fixtures are unmodified pages captured from the live shop. They exist so a
@@ -213,4 +214,80 @@ test('diffNew works on banners keyed by link', () => {
 
   const later = diffNew(first.keys, [...banners, { link: 'https://x/new-coin', image: null }], b => b.link)
   assert.deepEqual(later.fresh.map(b => b.link), ['https://x/new-coin'])
+})
+
+// A fake clock keeps these instant — the real burst runs for 15 minutes
+const fakeClock = (start = 0) => {
+  let t = start
+  return { now: () => t, sleep: async ms => { t += ms } }
+}
+
+test('watchUntilInStock returns the moment the coin becomes buyable', async () => {
+  const clock = fakeClock()
+  let calls = 0
+  const fetchImpl = async () => (++calls < 3 ? outOfStock : inStock)
+
+  const { product, polls, failures } = await watchUntilInStock('https://x/p-1.html', {
+    deadline: 60_000,
+    intervalMs: 2000,
+    fetchImpl,
+    ...clock,
+  })
+
+  assert.equal(product.availability, 'InStock')
+  assert.equal(polls, 3)
+  assert.equal(failures, 0)
+  assert.equal(calls, 3, 'must stop polling the instant it hits')
+})
+
+test('watchUntilInStock gives up at the deadline instead of spinning', async () => {
+  const clock = fakeClock()
+  let calls = 0
+  const fetchImpl = async () => (calls++, outOfStock)
+
+  const { product, polls } = await watchUntilInStock('https://x/p-1.html', {
+    deadline: 10_000,
+    intervalMs: 2000,
+    fetchImpl,
+    ...clock,
+  })
+
+  assert.equal(product, null)
+  assert.equal(polls, 5) // 10s window at 2s intervals
+})
+
+test('watchUntilInStock keeps polling through shield failures', async () => {
+  const clock = fakeClock()
+  let calls = 0
+  const fetchImpl = async () => {
+    calls++
+    if (calls <= 4) throw new Error('HTTP 403')
+    return inStock
+  }
+
+  const { product, failures } = await watchUntilInStock('https://x/p-1.html', {
+    deadline: 60_000,
+    intervalMs: 2000,
+    fetchImpl,
+    ...clock,
+  })
+
+  // drop-time load will refuse plenty of requests; giving up would defeat it
+  assert.equal(product.availability, 'InStock')
+  assert.equal(failures, 4)
+})
+
+test('watchUntilInStock does not poll at all once the deadline has passed', async () => {
+  const clock = fakeClock(99_000)
+  let calls = 0
+
+  const { product, polls } = await watchUntilInStock('https://x/p-1.html', {
+    deadline: 10_000,
+    fetchImpl: async () => (calls++, inStock),
+    ...clock,
+  })
+
+  assert.equal(product, null)
+  assert.equal(polls, 0)
+  assert.equal(calls, 0)
 })

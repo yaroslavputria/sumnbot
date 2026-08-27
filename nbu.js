@@ -168,6 +168,37 @@ export function parseAvailability(html) {
   return parseProduct(html)?.availability ?? null
 }
 
+// Polls one product page until it becomes buyable or the deadline passes.
+// This is the part that has to win the race: a coin sells out within seconds
+// of going live. Failures are counted rather than thrown — under drop-time
+// load the shop refuses plenty of requests, and giving up on the first one
+// would defeat the purpose.
+export async function watchUntilInStock(url, {
+  deadline,
+  intervalMs = 2000,
+  fetchImpl = fetchPage,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  now = () => Date.now(),
+} = {}) {
+  let failures = 0
+  let polls = 0
+
+  while (now() < deadline) {
+    polls++
+
+    try {
+      const product = parseProduct(await fetchImpl(url, { retries: 0, timeoutMs: 5000 }))
+      if (product?.availability === 'InStock') return { product, polls, failures }
+    } catch {
+      failures++
+    }
+
+    await sleep(intervalMs)
+  }
+
+  return { product: null, polls, failures }
+}
+
 // Announcements arrive as homepage banners: clickable blocks carrying a
 // location.href, plus the slides of the front slider
 const CLICKABLE_RE = /<(?:div|a|section)\b([^>]*location\.href='([^']+)'[^>]*)>/g

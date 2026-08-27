@@ -3,7 +3,17 @@ import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
 import { formatMessage, isUseful, chunkArray, commandArgs, replyLong, withHealthCheck } from './helpers.js'
-import { fetchPage, parseCatalog, parseBanners, diffNew, CATALOG_URL, HOME_URL } from './nbu.js'
+import {
+  fetchPage,
+  parseCatalog,
+  parseBanners,
+  parseProduct,
+  diffNew,
+  productUrl,
+  watchUntilInStock,
+  CATALOG_URL,
+  HOME_URL,
+} from './nbu.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
@@ -51,6 +61,14 @@ const COINS_POLL_INTERVAL = 4 * 60 * 60 * 1000
 const COINS_ONSALE_KEY = 'coins:onsale'
 const COINS_SUBS_KEY = 'coins:subs'
 const COINS_BANNERS_KEY = 'coins:banners'
+const COINS_WATCH_KEY = 'coins:watch'
+
+// A coin sells out within seconds of going live, so once a drop is close we
+// stop sweeping and poll that one product hard.
+const COINS_WATCH_POLL_INTERVAL = 30_000
+const COINS_BURST_INTERVAL = 2_000
+const COINS_BURST_WINDOW = 15 * 60 * 1000
+const COINS_PREWARN = 5 * 60 * 1000
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -100,6 +118,19 @@ const FINAL_PROMPT = `
 - 5-10 пунктів
 - кожен пункт: суть + короткий дотепний коментар (за потреби)
 `
+
+// Same contract as REMIND_PARSE_PROMPT, but NBU sales open at 10:00, so a
+// bare date must not fall back to the reminder default of 09:00
+const COIN_WATCH_PARSE_PROMPT = `Ти парсиш дату і час старту продажу монети з українського тексту. Поточна дата і час у Києві будуть вказані в запиті.
+
+Розпізнавай відносні ("через 2 години"), конкретні дати ("15 вересня"), "завтра", "післязавтра", дні тижня.
+
+Якщо час доби НЕ вказано явно — використовуй 10:00, бо продаж монет НБУ стартує о 10:00.
+Конвертуй київський час у UTC (влітку UTC+3, взимку UTC+2).
+
+Відповідай ТІЛЬКИ валідним JSON без коментарів:
+{"datetime": "2026-09-15T07:00:00.000Z"}
+Якщо час незрозумілий: {"error": "час не розпізнано"}`
 
 const REMIND_PARSE_PROMPT = `Ти парсиш час з українського тексту. Поточна дата і час у Києві будуть вказані в запиті.
 
@@ -256,6 +287,35 @@ bot.command('ask', async (ctx) => {
   }
 })
 
+// --- TIME PARSING ---
+function localTime(at) {
+  return new Intl.DateTimeFormat('uk-UA', {
+    timeZone: TIMEZONE,
+    timeStyle: 'short',
+    dateStyle: 'short',
+  }).format(at)
+}
+
+// Shared by /remind and /coin_watch — same call shape, different defaults
+async function parseWhen(input, prompt) {
+  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: TIMEZONE,
+    dateStyle: 'full',
+    timeStyle: 'medium',
+  }).format(new Date())
+
+  const res = await openai.chat.completions.create({
+    model: MODEL,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
+    ],
+  })
+
+  return JSON.parse(res.choices[0].message.content)
+}
+
 // --- REMIND ---
 bot.command('remind', async (ctx) => {
   const input = commandArgs(ctx)
@@ -264,23 +324,9 @@ bot.command('remind', async (ctx) => {
     return ctx.reply('Вкажи час і текст. Наприклад: /remind через 30 хвилин випити таблетку')
   }
 
-  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: TIMEZONE,
-    dateStyle: 'full',
-    timeStyle: 'medium',
-  }).format(new Date())
-
   let parsed
   try {
-    const res = await openai.chat.completions.create({
-      model: MODEL,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: REMIND_PARSE_PROMPT },
-        { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
-      ],
-    })
-    parsed = JSON.parse(res.choices[0].message.content)
+    parsed = await parseWhen(input, REMIND_PARSE_PROMPT)
   } catch (err) {
     console.error('Failed to parse reminder time:', err)
     return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
@@ -303,13 +349,7 @@ bot.command('remind', async (ctx) => {
     return ctx.reply('Помилка при збереженні нагадування. Спробуй пізніше.')
   }
 
-  const localTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: TIMEZONE,
-    timeStyle: 'short',
-    dateStyle: 'short',
-  }).format(new Date(fireAt))
-
-  await ctx.reply(`Нагадаю о ${localTime}: ${parsed.text}`)
+  await ctx.reply(`Нагадаю о ${localTime(new Date(fireAt))}: ${parsed.text}`)
 })
 
 // --- ROAST ---
@@ -378,6 +418,8 @@ bot.command('help', (ctx) => {
     '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
     '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
     '/coins_on, /coins_off — сповіщення коли монета зʼявляється у продажу\n' +
+    '/coin_watch <id|посилання> [коли] — стежити за стартом продажу монети\n' +
+    '/coin_unwatch — прибрати стеження\n' +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -470,6 +512,96 @@ async function findNewBanners() {
   return fresh
 }
 
+// Alerts go to everyone subscribed, plus whoever armed the watch even if
+// that chat never ran /coins_on
+async function notifyWatchers(chatId, text) {
+  const targets = new Set(await redis.smembers(COINS_SUBS_KEY))
+  if (chatId) targets.add(String(chatId))
+
+  for (const target of targets) {
+    try {
+      await bot.telegram.sendMessage(target, text)
+    } catch (err) {
+      console.error(`Failed to notify chat ${target}:`, err)
+    }
+  }
+}
+
+async function armWatch({ url, name, dropAt, chatId }) {
+  const member = JSON.stringify({ url, name, dropAt, chatId })
+  await redis.zadd(COINS_WATCH_KEY, Math.max(dropAt - COINS_PREWARN, Date.now()), member)
+}
+
+bot.command('coin_watch', async (ctx) => {
+  const args = commandArgs(ctx)
+  const [ref, ...rest] = args.split(/\s+/)
+  const url = productUrl(ref)
+
+  if (!url) {
+    return ctx.reply('Вкажи монету — посилання або id. Наприклад: /coin_watch 1183 завтра о 10:00')
+  }
+
+  const when = rest.join(' ').trim()
+  let dropAt = Date.now()
+
+  if (when) {
+    let parsed
+    try {
+      parsed = await parseWhen(when, COIN_WATCH_PARSE_PROMPT)
+    } catch (err) {
+      console.error('Failed to parse drop time:', err)
+      return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
+    }
+
+    if (parsed.error) {
+      return ctx.reply('Не зрозумів коли стартує продаж. Напиши, наприклад: "15 вересня" або "завтра о 10:00".')
+    }
+
+    dropAt = new Date(parsed.datetime).getTime()
+    if (isNaN(dropAt)) {
+      return ctx.reply('Невалідна дата. Спробуй ще раз.')
+    }
+  }
+
+  let name = ref
+  try {
+    name = parseProduct(await fetchPage(url))?.name || ref
+  } catch (err) {
+    console.error('Failed to look up watched coin:', err)
+  }
+
+  try {
+    await armWatch({ url, name, dropAt, chatId: ctx.chat.id })
+  } catch (err) {
+    console.error('Failed to save coin watch:', err)
+    return ctx.reply('Помилка при збереженні. Спробуй пізніше.')
+  }
+
+  await ctx.reply(
+    `Стежу за «${name}».\nСтарт: ${localTime(new Date(dropAt))}\n${url}\n\n` +
+    'Попереджу за 5 хвилин і напишу щойно кнопка купівлі стане активною.',
+  )
+})
+
+bot.command('coin_unwatch', async (ctx) => {
+  const chatId = ctx.chat.id
+  const members = await redis.zrange(COINS_WATCH_KEY, 0, -1)
+  const mine = members.filter(m => {
+    try {
+      return JSON.parse(m).chatId === chatId
+    } catch {
+      return false
+    }
+  })
+
+  if (!mine.length) {
+    return ctx.reply('Немає активних стеження за монетами.')
+  }
+
+  await redis.zrem(COINS_WATCH_KEY, ...mine)
+  await ctx.reply(`Прибрав ${mine.length} стеження.`)
+})
+
 bot.command('coins_on', async (ctx) => {
   await redis.sadd(COINS_SUBS_KEY, String(ctx.chat.id))
   await ctx.reply('Підписав цей чат на сповіщення про монети. Вимкнути — /coins_off')
@@ -523,6 +655,54 @@ setInterval(async () => {
   }
 }, COINS_POLL_INTERVAL)
 
+// Claim-then-act, same shape as the reminder poller
+setInterval(async () => {
+  try {
+    const due = await redis.zrangebyscore(COINS_WATCH_KEY, 0, Date.now())
+
+    for (const member of due) {
+      const claimed = await redis.zrem(COINS_WATCH_KEY, member)
+      if (!claimed) continue
+
+      const watch = JSON.parse(member)
+
+      // deliberately not awaited: a burst runs for minutes and must not
+      // block the next tick or another coin's window
+      runWatch(watch).catch(err => console.error('Coin watch failed:', err))
+    }
+  } catch (err) {
+    console.error('Coin watch poller error:', err)
+  }
+}, COINS_WATCH_POLL_INTERVAL)
+
+async function runWatch(watch) {
+  const { url, name, dropAt, chatId } = watch
+
+  await notifyWatchers(
+    chatId,
+    `⏰ «${name}» стартує о ${localTime(new Date(dropAt))}.\n${url}\n\n` +
+    'Відкрий сторінку зараз — на старті є лише кілька секунд.',
+  )
+
+  // arming late still gets a full window rather than an instant give-up
+  const deadline = Math.max(dropAt, Date.now()) + COINS_BURST_WINDOW
+  const { product, polls, failures } = await watchUntilInStock(url, {
+    deadline,
+    intervalMs: COINS_BURST_INTERVAL,
+  })
+
+  console.log(`Burst watch on ${url}: ${polls} polls, ${failures} failures, ${product ? 'hit' : 'timed out'}`)
+
+  if (product) {
+    return notifyWatchers(
+      chatId,
+      `🔥 «${name}» У ПРОДАЖУ!\n${product.price ? `${product.price} ${product.currency}\n` : ''}${url}`,
+    )
+  }
+
+  await notifyWatchers(chatId, `Не дочекався старту «${name}». Перевір вручну: ${url}`)
+}
+
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
@@ -534,6 +714,8 @@ await bot.telegram.setMyCommands([
   { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
   { command: 'coins_on', description: 'Підписати чат на сповіщення про монети' },
   { command: 'coins_off', description: 'Відписати чат від сповіщень про монети' },
+  { command: 'coin_watch', description: 'Стежити за монетою (напр. /coin_watch 1183 завтра о 10:00)' },
+  { command: 'coin_unwatch', description: 'Прибрати стеження за монетами' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 
