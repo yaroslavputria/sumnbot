@@ -149,6 +149,19 @@ export function parseProduct(html) {
   return null
 }
 
+// Compares a fresh catalog against the ids we already knew about. The very
+// first run has nothing stored, and must report no arrivals — otherwise
+// deploying the feature announces the entire catalog at once.
+export function diffOnSale(knownIds, items) {
+  const seen = new Set(knownIds)
+
+  return {
+    ids: items.map(i => i.id),
+    seeding: knownIds.length === 0,
+    fresh: knownIds.length === 0 ? [] : items.filter(i => !seen.has(i.id)),
+  }
+}
+
 export function parseAvailability(html) {
   return parseProduct(html)?.availability ?? null
 }

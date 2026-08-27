@@ -11,6 +11,7 @@ import {
   parseProduct,
   parseAvailability,
   parseBanners,
+  diffOnSale,
 } from './nbu.js'
 
 // Fixtures are unmodified pages captured from the live shop. They exist so a
@@ -162,4 +163,42 @@ test('fetchPage recovers when a retry succeeds', async () => {
 
   assert.equal(await fetchPage('https://x/', { fetchImpl, sleep: async () => {} }), 'ok')
   assert.equal(calls, 2)
+})
+
+test('diffOnSale reports nothing on the very first run', () => {
+  const items = parseCatalog(catalog)
+  const { seeding, fresh, ids } = diffOnSale([], items)
+
+  // deploying the feature must not announce all seven existing products
+  assert.equal(seeding, true)
+  assert.deepEqual(fresh, [])
+  assert.equal(ids.length, 7)
+})
+
+test('diffOnSale reports only genuinely new coins', () => {
+  const items = parseCatalog(catalog)
+  const known = items.map(i => i.id).filter(id => id !== '1199')
+
+  const { seeding, fresh } = diffOnSale(known, items)
+
+  assert.equal(seeding, false)
+  assert.deepEqual(fresh.map(i => i.id), ['1199'])
+  assert.match(fresh[0].name, /Господарська юстиція/)
+})
+
+test('diffOnSale is quiet when nothing changed', () => {
+  const items = parseCatalog(catalog)
+  const { fresh } = diffOnSale(items.map(i => i.id), items)
+
+  assert.deepEqual(fresh, [])
+})
+
+test('diffOnSale ignores coins that left the catalog', () => {
+  const items = parseCatalog(catalog)
+  const known = [...items.map(i => i.id), '999999']
+
+  const { fresh, ids } = diffOnSale(known, items)
+
+  assert.deepEqual(fresh, [])
+  assert.ok(!ids.includes('999999'))
 })

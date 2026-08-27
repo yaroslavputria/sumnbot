@@ -3,6 +3,7 @@ import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
 import { formatMessage, isUseful, chunkArray, commandArgs, replyLong, withHealthCheck } from './helpers.js'
+import { fetchPage, parseCatalog, diffOnSale, CATALOG_URL } from './nbu.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
@@ -43,6 +44,11 @@ const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
 const MODEL = 'gpt-4o-mini'
 const TIMEZONE = 'Europe/Kyiv'
+
+// The shop announces a coin days ahead and only flips it to buyable at 10:00
+// on the day, so a slow sweep is enough to spot changes
+const COINS_POLL_INTERVAL = 4 * 60 * 60 * 1000
+const COINS_ONSALE_KEY = 'coins:onsale'
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -368,6 +374,7 @@ bot.command('help', (ctx) => {
     '/ask <питання> — коротка відповідь по суті\n' +
     '/remind <час + текст> — нагадування в зазначений час\n' +
     '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
+    '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -398,6 +405,67 @@ setInterval(async () => {
   }
 }, 30_000)
 
+// --- COIN MONITOR ---
+
+// Returns the coins that appeared since the last sweep. The first run seeds
+// the set and reports nothing, otherwise it would announce the whole catalog.
+async function refreshCoinsOnSale() {
+  const items = parseCatalog(await fetchPage(CATALOG_URL))
+
+  if (!items.length) {
+    console.warn('Coin catalog looks empty, skipping this sweep')
+    return []
+  }
+
+  const known = await redis.smembers(COINS_ONSALE_KEY)
+  const { ids, seeding, fresh } = diffOnSale(known, items)
+
+  const pipeline = redis.pipeline()
+  pipeline.del(COINS_ONSALE_KEY)
+  pipeline.sadd(COINS_ONSALE_KEY, ids)
+  await pipeline.exec()
+
+  if (seeding) console.log(`Seeded coin catalog with ${ids.length} products`)
+
+  return fresh
+}
+
+function formatCoin(coin) {
+  return `${coin.name}${coin.price ? ` — ${coin.price}` : ''}\n${coin.url}`
+}
+
+bot.command('coins', async (ctx) => {
+  const statusMsg = await ctx.reply('Дивлюсь що в продажу...')
+
+  try {
+    const items = parseCatalog(await fetchPage(CATALOG_URL))
+
+    if (!items.length) {
+      return await ctx.reply('Зараз у продажу нічого немає.')
+    }
+
+    await replyLong(ctx, `Зараз у продажу (${items.length}):\n\n${items.map(formatCoin).join('\n\n')}`)
+  } catch (err) {
+    console.error('Failed to fetch coin catalog:', err)
+    await ctx.reply('Не вдалося отримати каталог. Спробуй пізніше.')
+  } finally {
+    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {})
+  }
+})
+
+setInterval(async () => {
+  try {
+    const fresh = await refreshCoinsOnSale()
+    for (const coin of fresh) {
+      console.log(`Coin went on sale: ${coin.id} ${coin.name}`)
+    }
+  } catch (err) {
+    // the shop sits behind a shield that can start refusing us at any time;
+    // stay quiet and try again next sweep
+    console.error('Coin sweep failed:', err)
+  }
+}, COINS_POLL_INTERVAL)
+
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
@@ -406,6 +474,7 @@ await bot.telegram.setMyCommands([
   { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке JWT?)' },
   { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
   { command: 'roast', description: 'Роаст юзера за його повідомленнями (напр. /roast @username)' },
+  { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
   { command: 'help', description: 'Список доступних команд' },
 ])
 
