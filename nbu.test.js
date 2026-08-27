@@ -13,6 +13,7 @@ import {
   parseBanners,
   diffNew,
   watchUntilInStock,
+  isBlocked,
 } from './nbu.js'
 
 // Fixtures are unmodified pages captured from the live shop. They exist so a
@@ -141,17 +142,6 @@ test('fetchPage sends browser headers, or the shield 403s us', async () => {
   assert.match(seen['User-Agent'], /Mozilla/)
   assert.equal(seen['Sec-Fetch-Mode'], 'navigate')
   assert.match(seen['Accept-Language'], /uk-UA/)
-})
-
-test('fetchPage retries then gives up on a persistent 403', async () => {
-  let calls = 0
-  const fetchImpl = async () => (calls++, { ok: false, status: 403 })
-
-  await assert.rejects(
-    fetchPage('https://x/', { fetchImpl, retries: 2, sleep: async () => {} }),
-    /HTTP 403/,
-  )
-  assert.equal(calls, 3)
 })
 
 test('fetchPage recovers when a retry succeeds', async () => {
@@ -290,4 +280,33 @@ test('watchUntilInStock does not poll at all once the deadline has passed', asyn
   assert.equal(product, null)
   assert.equal(polls, 0)
   assert.equal(calls, 0)
+})
+
+test('fetchPage fails fast on 403 instead of retrying', async () => {
+  let calls = 0
+  const fetchImpl = async () => (calls++, { ok: false, status: 403 })
+
+  const err = await fetchPage('https://x/', { fetchImpl, retries: 2, sleep: async () => {} })
+    .then(() => null, e => e)
+
+  // the shield blocks by request origin, so retrying cannot possibly help
+  assert.equal(calls, 1)
+  assert.equal(err.status, 403)
+  assert.equal(isBlocked(err), true)
+})
+
+test('fetchPage still retries transient failures', async () => {
+  let calls = 0
+  const fetchImpl = async () => (calls++, { ok: false, status: 503 })
+
+  const err = await fetchPage('https://x/', { fetchImpl, retries: 2, sleep: async () => {} })
+    .then(() => null, e => e)
+
+  assert.equal(calls, 3)
+  assert.equal(isBlocked(err), false)
+})
+
+test('isBlocked ignores unrelated errors', () => {
+  assert.equal(isBlocked(new Error('socket hang up')), false)
+  assert.equal(isBlocked(undefined), false)
 })

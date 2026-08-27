@@ -11,6 +11,14 @@
 // Parsing is regex and JSON.parse over the JSON-LD block rather than a DOM
 // library, to keep the dependency count at three.
 
+// The shop refuses requests from datacenter IPs: the same code and headers
+// return 200 from a home connection and 403 from a cloud host. Callers use
+// this to tell "blocked" apart from "nothing new", which otherwise look
+// identical and leave the monitor silently dead.
+export function isBlocked(err) {
+  return err?.status === 403
+}
+
 export const BASE_URL = 'https://coins.bank.gov.ua'
 export const CATALOG_URL = `${BASE_URL}/catalog.html`
 export const HOME_URL = `${BASE_URL}/`
@@ -82,9 +90,15 @@ export async function fetchPage(url, { timeoutMs = 15000, retries = 2, backoffMs
         signal: AbortSignal.timeout(timeoutMs),
       })
 
-      // 403 means the shield rejected us; retrying rarely helps but is cheap
       if (!res.ok) {
         lastError = new Error(`${url} -> HTTP ${res.status}`)
+        lastError.status = res.status
+
+        // the shield blocks by request origin, not by anything we send, so
+        // retrying a 403 cannot help. break, not throw — a throw here would
+        // be swallowed by this loop's own catch and retried anyway.
+        if (res.status === 403) break
+
         continue
       }
 

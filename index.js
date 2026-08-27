@@ -11,6 +11,7 @@ import {
   diffNew,
   productUrl,
   watchUntilInStock,
+  isBlocked,
   CATALOG_URL,
   HOME_URL,
 } from './nbu.js'
@@ -69,6 +70,12 @@ const COINS_WATCH_POLL_INTERVAL = 30_000
 const COINS_BURST_INTERVAL = 2_000
 const COINS_BURST_WINDOW = 15 * 60 * 1000
 const COINS_PREWARN = 5 * 60 * 1000
+
+// The shop blocks datacenter IPs, so a deployed sweep can fail forever while
+// looking exactly like "no new coins". Say so once rather than going quiet.
+const COINS_FAILURES_BEFORE_ALERT = 3
+let coinSweepFailures = 0
+let coinBlockReported = false
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -625,7 +632,10 @@ bot.command('coins', async (ctx) => {
     await replyLong(ctx, `Зараз у продажу (${items.length}):\n\n${items.map(formatCoin).join('\n\n')}`)
   } catch (err) {
     console.error('Failed to fetch coin catalog:', err)
-    await ctx.reply('Не вдалося отримати каталог. Спробуй пізніше.')
+
+    await ctx.reply(isBlocked(err)
+      ? 'Магазин НБУ блокує запити з сервера (403). Каталог зараз недоступний для бота.'
+      : 'Не вдалося отримати каталог. Спробуй пізніше.')
   } finally {
     await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {})
   }
@@ -635,14 +645,29 @@ setInterval(async () => {
   try {
     const fresh = await refreshCoinsOnSale()
 
+    coinSweepFailures = 0
+    if (coinBlockReported) {
+      coinBlockReported = false
+      await broadcastToSubscribers('✅ Доступ до магазину НБУ відновився, стежу далі.')
+    }
+
     for (const coin of fresh) {
       console.log(`Coin went on sale: ${coin.id} ${coin.name}`)
       await broadcastToSubscribers(`🪙 Вже у продажу!\n\n${formatCoin(coin)}`)
     }
   } catch (err) {
-    // the shop sits behind a shield that can start refusing us at any time;
-    // stay quiet and try again next sweep
-    console.error('Coin sweep failed:', err)
+    coinSweepFailures++
+    console.error(`Coin sweep failed (${coinSweepFailures} in a row):`, err)
+
+    // report once, so a dead monitor cannot masquerade as a quiet one
+    if (coinSweepFailures >= COINS_FAILURES_BEFORE_ALERT && !coinBlockReported) {
+      coinBlockReported = true
+      await broadcastToSubscribers(
+        isBlocked(err)
+          ? '⚠️ Магазин НБУ блокує запити з сервера (403). Моніторинг монет не працює.'
+          : '⚠️ Не вдається отримати каталог монет. Моніторинг монет не працює.',
+      )
+    }
   }
 
   try {
