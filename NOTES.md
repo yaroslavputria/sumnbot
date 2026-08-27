@@ -37,19 +37,43 @@ timeouts. The `ALLOWED_CHATS` whitelist is the only abuse control, and
 chat can loop `/summary 1000` — 21 model calls each — against the
 OpenAI balance.
 
-## The coin monitor depends on a shield we do not control
+## The coin monitor is shelved — the shop blocks datacenter IPs
 
-The shop is behind BunnyCDN Shield. It currently lets us through on the
-strength of a browser-like header set (`nbu.js`), with no JS challenge.
-That is a standing dependency on someone else's configuration: if they
-tighten it, every coin feature stops working at once.
+**`COINS_MONITOR` is off by default and the feature does not work in
+production.** The shop refuses requests by where they come from, not by
+what they send. The same code and headers, measured 2026-08-27:
 
-Failures are deliberately quiet — logged, never sent to the chat — so a
-shield change degrades into silence rather than noise. The flip side is
-that **silence looks identical to "no new coins"**. If alerts go quiet
-for a suspiciously long stretch, check the logs before assuming nothing
-has been issued. A periodic "monitor still alive" heartbeat would fix
-the ambiguity and is not implemented.
+| Origin | `coins.bank.gov.ua` | `bank.gov.ua` |
+|---|---|---|
+| Home connection (CDN reports country `UA`) | 200, 68KB | 200 |
+| Render | 403 | — |
+| GitHub Actions runner (Azure) | 403 | — |
+| Other datacenter fetchers | 403 | 403 |
+
+Only `/robots.txt` is exempt from the shield; every path carrying data
+403s. So there is no unblocked endpoint to fall back to, and no free
+always-on host that the shop accepts.
+
+What was **not** determined: whether the rule is "non-Ukraine" or
+"datacenter ASN". Both test vantages were non-UA datacenters, so they
+cannot be told apart. A Ukrainian VPS would distinguish them and might
+make the feature work outright — untested, and it costs money.
+
+Not done deliberately: routing through a residential proxy to look like
+a home connection. That is circumventing an access control the operator
+put in place, rather than being a polite client.
+
+The code, fixtures and tests are all kept. Set `COINS_MONITOR=on`
+wherever the shop actually answers and the feature runs as built.
+
+## Quiet failure is ambiguous by design
+
+Fetch failures are logged, never pushed to the chat, so a shield change
+degrades into silence rather than noise. The sweep does report once
+after three consecutive failures and again when access returns, which
+covers the common case — but between those, **silence still looks
+identical to "no new coins"**. A periodic "monitor alive" heartbeat
+would remove the ambiguity and is not implemented.
 
 The fixtures under `fixtures/` pin the markup the shop served in August
 2026. If the site is redesigned, `npm test` fails — that is the intended

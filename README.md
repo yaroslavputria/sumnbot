@@ -30,14 +30,20 @@ buyable — not when it is announced. A coin is usually listed in the catalog
 but disabled until its sale opens at 10:00, so `/coin_watch` polls that
 product hard around the drop and warns five minutes ahead.
 
-Requires an external pinger on `/health` (cron-job.org, UptimeRobot) to stop
-Render's free tier sleeping through a drop.
+**Disabled by default.** The shop blocks datacenter IPs, so it returns 403 on
+Render and on GitHub Actions while working fine from a home connection. Set
+`COINS_MONITOR=on` to enable it wherever the shop responds; the coin commands
+are hidden from the menu while it is off.
+
+When enabled it also wants an external pinger on `/health` (cron-job.org,
+UptimeRobot) to stop Render's free tier sleeping through a drop.
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
 | `BOT_MODE` | `polling` for local dev, `webhook` (default) for production |
+| `COINS_MONITOR` | `on` enables the coin monitor (off by default — see below) |
 | `BOT_TOKEN` | Telegram bot token |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `REDIS_URL` | Redis connection URL |

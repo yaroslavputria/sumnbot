@@ -19,6 +19,11 @@ import {
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
 
+// The shop refuses datacenter IPs — Render and GitHub Actions both get 403,
+// the same code returns 200 from a home connection. Off by default so we do
+// not hammer a host that is refusing us; turn on where the shop responds.
+const COINS_ENABLED = process.env.COINS_MONITOR === 'on'
+
 const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'ALLOWED_CHATS']
 if (BOT_MODE === 'webhook') requiredEnv.push('WEBHOOK_DOMAIN')
 
@@ -73,6 +78,9 @@ const COINS_PREWARN = 5 * 60 * 1000
 
 // The shop blocks datacenter IPs, so a deployed sweep can fail forever while
 // looking exactly like "no new coins". Say so once rather than going quiet.
+const COINS_DISABLED_NOTICE =
+  'Моніторинг монет вимкнено: магазин НБУ блокує запити з сервера (403). ' +
+  'Працює лише там, звідки магазин відповідає — вмикається через COINS_MONITOR=on.'
 const COINS_FAILURES_BEFORE_ALERT = 3
 let coinSweepFailures = 0
 let coinBlockReported = false
@@ -423,10 +431,12 @@ bot.command('help', (ctx) => {
     '/ask <питання> — коротка відповідь по суті\n' +
     '/remind <час + текст> — нагадування в зазначений час\n' +
     '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
-    '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
-    '/coins_on, /coins_off — сповіщення коли монета зʼявляється у продажу\n' +
-    '/coin_watch <id|посилання> [коли] — стежити за стартом продажу монети\n' +
-    '/coin_unwatch — прибрати стеження\n' +
+    (COINS_ENABLED
+      ? '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
+        '/coins_on, /coins_off — сповіщення коли монета зʼявляється у продажу\n' +
+        '/coin_watch <id|посилання> [коли] — стежити за стартом продажу монети\n' +
+        '/coin_unwatch — прибрати стеження\n'
+      : '') +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -540,6 +550,8 @@ async function armWatch({ url, name, dropAt, chatId }) {
 }
 
 bot.command('coin_watch', async (ctx) => {
+  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
+
   const args = commandArgs(ctx)
   const [ref, ...rest] = args.split(/\s+/)
   const url = productUrl(ref)
@@ -591,6 +603,8 @@ bot.command('coin_watch', async (ctx) => {
 })
 
 bot.command('coin_unwatch', async (ctx) => {
+  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
+
   const chatId = ctx.chat.id
   const members = await redis.zrange(COINS_WATCH_KEY, 0, -1)
   const mine = members.filter(m => {
@@ -610,6 +624,8 @@ bot.command('coin_unwatch', async (ctx) => {
 })
 
 bot.command('coins_on', async (ctx) => {
+  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
+
   await redis.sadd(COINS_SUBS_KEY, String(ctx.chat.id))
   await ctx.reply('Підписав цей чат на сповіщення про монети. Вимкнути — /coins_off')
 })
@@ -620,6 +636,8 @@ bot.command('coins_off', async (ctx) => {
 })
 
 bot.command('coins', async (ctx) => {
+  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
+
   const statusMsg = await ctx.reply('Дивлюсь що в продажу...')
 
   try {
@@ -641,7 +659,12 @@ bot.command('coins', async (ctx) => {
   }
 })
 
-setInterval(async () => {
+if (!COINS_ENABLED) {
+  console.log('Coin monitor disabled (COINS_MONITOR is not "on")')
+}
+
+// Both pollers stay dormant unless the shop is actually reachable from here
+if (COINS_ENABLED) setInterval(async () => {
   try {
     const fresh = await refreshCoinsOnSale()
 
@@ -681,7 +704,7 @@ setInterval(async () => {
 }, COINS_POLL_INTERVAL)
 
 // Claim-then-act, same shape as the reminder poller
-setInterval(async () => {
+if (COINS_ENABLED) setInterval(async () => {
   try {
     const due = await redis.zrangebyscore(COINS_WATCH_KEY, 0, Date.now())
 
@@ -731,16 +754,22 @@ async function runWatch(watch) {
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
+// Coin commands stay out of the autocomplete menu while the monitor is off,
+// rather than offering something that can only answer with an error
 await bot.telegram.setMyCommands([
   { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
   { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке JWT?)' },
   { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
   { command: 'roast', description: 'Роаст юзера за його повідомленнями (напр. /roast @username)' },
-  { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
-  { command: 'coins_on', description: 'Підписати чат на сповіщення про монети' },
-  { command: 'coins_off', description: 'Відписати чат від сповіщень про монети' },
-  { command: 'coin_watch', description: 'Стежити за монетою (напр. /coin_watch 1183 завтра о 10:00)' },
-  { command: 'coin_unwatch', description: 'Прибрати стеження за монетами' },
+  ...(COINS_ENABLED
+    ? [
+      { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
+      { command: 'coins_on', description: 'Підписати чат на сповіщення про монети' },
+      { command: 'coins_off', description: 'Відписати чат від сповіщень про монети' },
+      { command: 'coin_watch', description: 'Стежити за монетою (напр. /coin_watch 1183 завтра о 10:00)' },
+      { command: 'coin_unwatch', description: 'Прибрати стеження за монетами' },
+    ]
+    : []),
   { command: 'help', description: 'Список доступних команд' },
 ])
 

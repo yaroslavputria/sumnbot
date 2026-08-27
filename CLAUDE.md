@@ -100,6 +100,15 @@ per-chunk loop is sequential on purpose ("послідовно для стабі
 
 ## Coin monitor
 
+**Currently shelved — `COINS_MONITOR` defaults to off.** The shop blocks
+datacenter IPs, so it cannot run on Render or GitHub Actions; see
+[NOTES.md](NOTES.md) for the measurements. The code, fixtures and tests
+are kept intact, and `COINS_MONITOR=on` runs it wherever the shop
+answers. When off, both pollers stay dormant, the coin commands reply
+with a notice, and they are left out of the Telegram autocomplete menu —
+`/coins_off` is deliberately still live so a subscribed chat can always
+opt out.
+
 Watches [coins.bank.gov.ua](https://coins.bank.gov.ua/) for the moment a
 coin actually becomes buyable. `nbu.js` holds the client and parsers;
 everything stateful is in `index.js`.
