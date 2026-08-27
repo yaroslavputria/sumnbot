@@ -2,9 +2,14 @@ import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
+import { formatMessage, isUseful, chunkArray, commandArgs, replyLong } from './helpers.js'
 
 // --- ENV VALIDATION ---
-const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'WEBHOOK_DOMAIN', 'ALLOWED_CHATS']
+const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
+
+const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'ALLOWED_CHATS']
+if (BOT_MODE === 'webhook') requiredEnv.push('WEBHOOK_DOMAIN')
+
 for (const key of requiredEnv) {
   if (!process.env[key]) {
     console.error(`Missing required environment variable: ${key}`)
@@ -36,6 +41,8 @@ redis.on('error', (err) => {
 // --- CONFIG ---
 const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
+const MODEL = 'gpt-4o-mini'
+const TIMEZONE = 'Europe/Kyiv'
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -103,29 +110,6 @@ const REMIND_PARSE_PROMPT = `Ти парсиш час з українськог�
 {"datetime": "2025-05-09T15:00:00.000Z", "text": "текст нагадування без часової частини"}
 Якщо час незрозумілий: {"error": "час не розпізнано"}`
 
-// --- HELPERS ---
-function formatMessage(ctx) {
-  const user =
-    ctx.from.username ||
-    `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim()
-
-  return `${user}: ${ctx.message.text}`
-}
-
-function isUseful(text) {
-  if (!text) return false
-  if (text.startsWith('/')) return false
-  return true
-}
-
-function chunkArray(arr, size) {
-  const chunks = []
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size))
-  }
-  return chunks
-}
-
 // --- LOGGING ---
 bot.use((ctx, next) => {
   console.log(`Update: ${ctx.updateType} from ${ctx.from?.id}`)
@@ -166,9 +150,8 @@ bot.on('text', async (ctx, next) => {
 
 // --- SUMMARY WITH CHUNKING + AGGREGATION ---
 bot.command('summary', async (ctx) => {
-  console.log('summary command triggered')
   const chatId = ctx.chat.id
-  const n = Math.min(Number(ctx.message.text.split(' ')[1]) || 50, MAX_MESSAGES)
+  const n = Math.min(Number(commandArgs(ctx)) || 50, MAX_MESSAGES)
 
   let messages
   try {
@@ -195,7 +178,7 @@ bot.command('summary', async (ctx) => {
       const text = chunk.join('\n')
 
       const res = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           {
@@ -212,7 +195,7 @@ bot.command('summary', async (ctx) => {
     const finalInput = partialSummaries.join('\n\n')
 
     const finalRes = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         { role: 'system', content: FINAL_PROMPT },
         {
@@ -224,7 +207,7 @@ bot.command('summary', async (ctx) => {
 
     const finalSummary = finalRes.choices[0].message.content
 
-    await ctx.reply(finalSummary)
+    await replyLong(ctx, finalSummary)
   } catch (err) {
     console.error('Failed to generate summary:', err)
     await ctx.reply('Помилка при генерації самарі. Спробуй пізніше.')
@@ -235,9 +218,7 @@ bot.command('summary', async (ctx) => {
 
 // --- ASK ---
 bot.command('ask', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const question = ctx.message.text.slice(cmdLength).trim()
-  console.log('Asked question:', question)
+  const question = commandArgs(ctx)
   if (!question) {
     return ctx.reply('Вкажи питання після команди. Наприклад: /ask що таке JWT?')
   }
@@ -246,7 +227,7 @@ bot.command('ask', async (ctx) => {
 
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         {
           role: 'system',
@@ -258,7 +239,7 @@ bot.command('ask', async (ctx) => {
       ],
     })
 
-    await ctx.reply(res.choices[0].message.content)
+    await replyLong(ctx, res.choices[0].message.content)
   } catch (err) {
     console.error('Failed to answer question:', err)
     await ctx.reply('Помилка при генерації відповіді. Спробуй пізніше.')
@@ -269,15 +250,14 @@ bot.command('ask', async (ctx) => {
 
 // --- REMIND ---
 bot.command('remind', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const input = ctx.message.text.slice(cmdLength).trim()
+  const input = commandArgs(ctx)
 
   if (!input) {
     return ctx.reply('Вкажи час і текст. Наприклад: /remind через 30 хвилин випити таблетку')
   }
 
   const kyivNow = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
+    timeZone: TIMEZONE,
     dateStyle: 'full',
     timeStyle: 'medium',
   }).format(new Date())
@@ -285,14 +265,16 @@ bot.command('remind', async (ctx) => {
   let parsed
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
+      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: REMIND_PARSE_PROMPT },
         { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
       ],
     })
     parsed = JSON.parse(res.choices[0].message.content)
-  } catch {
+  } catch (err) {
+    console.error('Failed to parse reminder time:', err)
     return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
   }
 
@@ -306,10 +288,15 @@ bot.command('remind', async (ctx) => {
   }
 
   const member = JSON.stringify({ chatId: ctx.chat.id, text: parsed.text })
-  await redis.zadd('reminders', fireAt, member)
+  try {
+    await redis.zadd('reminders', fireAt, member)
+  } catch (err) {
+    console.error('Failed to save reminder:', err)
+    return ctx.reply('Помилка при збереженні нагадування. Спробуй пізніше.')
+  }
 
   const localTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: 'Europe/Kyiv',
+    timeZone: TIMEZONE,
     timeStyle: 'short',
     dateStyle: 'short',
   }).format(new Date(fireAt))
@@ -319,8 +306,7 @@ bot.command('remind', async (ctx) => {
 
 // --- ROAST ---
 bot.command('roast', async (ctx) => {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  const args = ctx.message.text.slice(cmdLength).trim().split(/\s+/)
+  const args = commandArgs(ctx).split(/\s+/)
   const rawUsername = args[0]?.replace(/^@/, '')
   const n = Math.min(Number(args[1]) || 50, MAX_MESSAGES)
 
@@ -348,7 +334,7 @@ bot.command('roast', async (ctx) => {
 
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: MODEL,
       messages: [
         {
           role: 'system',
@@ -365,7 +351,7 @@ bot.command('roast', async (ctx) => {
       ],
     })
 
-    await ctx.reply(res.choices[0].message.content)
+    await replyLong(ctx, res.choices[0].message.content)
   } catch (err) {
     console.error('Failed to generate roast:', err)
     await ctx.reply('Помилка при генерації роасту. Спробуй пізніше.')
@@ -394,11 +380,18 @@ setInterval(async () => {
     const due = await redis.zrangebyscore('reminders', 0, now)
     if (!due.length) return
 
-    await redis.zremrangebyscore('reminders', 0, now)
-
     for (const member of due) {
-      const { chatId, text } = JSON.parse(member)
-      await bot.telegram.sendMessage(chatId, `🔔 Нагадування: ${text}`)
+      // zrem is the atomic claim — only one poller tick can win a member,
+      // and members added after the read above are never touched
+      const claimed = await redis.zrem('reminders', member)
+      if (!claimed) continue
+
+      try {
+        const { chatId, text } = JSON.parse(member)
+        await bot.telegram.sendMessage(chatId, `🔔 Нагадування: ${text}`)
+      } catch (err) {
+        console.error('Failed to deliver reminder:', err)
+      }
     }
   } catch (err) {
     console.error('Reminder poller error:', err)
@@ -416,11 +409,17 @@ await bot.telegram.setMyCommands([
   { command: 'help', description: 'Список доступних команд' },
 ])
 
-const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
+if (BOT_MODE === 'polling') {
+  // launch() resolves only when the bot stops, so it must not be awaited.
+  // It also calls deleteWebhook — never run this with the production token.
+  bot.launch(() => console.log('Bot is running in polling mode'))
+} else {
+  const webhookHandler = await bot.createWebhook({ domain: process.env.WEBHOOK_DOMAIN })
 
-http.createServer(webhookHandler).listen(PORT, () => {
-  console.log(`Bot is running on port ${PORT}`)
-})
+  http.createServer(webhookHandler).listen(PORT, () => {
+    console.log(`Bot is running in webhook mode on port ${PORT}`)
+  })
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
