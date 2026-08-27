@@ -40,6 +40,7 @@ redis.on('error', (err) => {
 // --- CONFIG ---
 const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
+const MAX_MESSAGE_LENGTH = 4000
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -128,6 +129,31 @@ function chunkArray(arr, size) {
     chunks.push(arr.slice(i, i + size))
   }
   return chunks
+}
+
+// Telegram rejects messages over 4096 characters, so long LLM output is
+// split on line breaks (falling back to a hard cut for a single long line)
+function splitForTelegram(text, limit = MAX_MESSAGE_LENGTH) {
+  const parts = []
+  let rest = text
+
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit)
+    const cut = window.lastIndexOf('\n')
+    const at = cut > 0 ? cut : limit
+
+    parts.push(rest.slice(0, at).trimEnd())
+    rest = rest.slice(at).trimStart()
+  }
+
+  if (rest.length) parts.push(rest)
+  return parts
+}
+
+async function replyLong(ctx, text) {
+  for (const part of splitForTelegram(text)) {
+    await ctx.reply(part)
+  }
 }
 
 // --- LOGGING ---
@@ -228,7 +254,7 @@ bot.command('summary', async (ctx) => {
 
     const finalSummary = finalRes.choices[0].message.content
 
-    await ctx.reply(finalSummary)
+    await replyLong(ctx, finalSummary)
   } catch (err) {
     console.error('Failed to generate summary:', err)
     await ctx.reply('Помилка при генерації самарі. Спробуй пізніше.')
@@ -262,7 +288,7 @@ bot.command('ask', async (ctx) => {
       ],
     })
 
-    await ctx.reply(res.choices[0].message.content)
+    await replyLong(ctx, res.choices[0].message.content)
   } catch (err) {
     console.error('Failed to answer question:', err)
     await ctx.reply('Помилка при генерації відповіді. Спробуй пізніше.')
@@ -376,7 +402,7 @@ bot.command('roast', async (ctx) => {
       ],
     })
 
-    await ctx.reply(res.choices[0].message.content)
+    await replyLong(ctx, res.choices[0].message.content)
   } catch (err) {
     console.error('Failed to generate roast:', err)
     await ctx.reply('Помилка при генерації роасту. Спробуй пізніше.')
