@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf'
 import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
+import { formatMessage, isUseful, chunkArray, commandArgs, replyLong } from './helpers.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
@@ -40,7 +41,6 @@ redis.on('error', (err) => {
 // --- CONFIG ---
 const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
-const MAX_MESSAGE_LENGTH = 4000
 const MODEL = 'gpt-4o-mini'
 const TIMEZONE = 'Europe/Kyiv'
 
@@ -109,61 +109,6 @@ const REMIND_PARSE_PROMPT = `Ти парсиш час з українськог�
 Відповідай ТІЛЬКИ валідним JSON без коментарів:
 {"datetime": "2025-05-09T15:00:00.000Z", "text": "текст нагадування без часової частини"}
 Якщо час незрозумілий: {"error": "час не розпізнано"}`
-
-// --- HELPERS ---
-function formatMessage(ctx) {
-  const user =
-    ctx.from.username ||
-    `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim()
-
-  return `${user}: ${ctx.message.text}`
-}
-
-function isUseful(text) {
-  if (!text) return false
-  if (text.startsWith('/')) return false
-  return true
-}
-
-function chunkArray(arr, size) {
-  const chunks = []
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size))
-  }
-  return chunks
-}
-
-// Telegram rejects messages over 4096 characters, so long LLM output is
-// split on line breaks (falling back to a hard cut for a single long line)
-function splitForTelegram(text, limit = MAX_MESSAGE_LENGTH) {
-  const parts = []
-  let rest = text
-
-  while (rest.length > limit) {
-    const window = rest.slice(0, limit)
-    const cut = window.lastIndexOf('\n')
-    const at = cut > 0 ? cut : limit
-
-    parts.push(rest.slice(0, at).trimEnd())
-    rest = rest.slice(at).trimStart()
-  }
-
-  if (rest.length) parts.push(rest)
-  return parts
-}
-
-// The command entity carries its own length, which is what makes the
-// /cmd@botname form parse correctly in groups
-function commandArgs(ctx) {
-  const cmdLength = ctx.message.entities?.[0]?.length ?? 0
-  return ctx.message.text.slice(cmdLength).trim()
-}
-
-async function replyLong(ctx, text) {
-  for (const part of splitForTelegram(text)) {
-    await ctx.reply(part)
-  }
-}
 
 // --- LOGGING ---
 bot.use((ctx, next) => {

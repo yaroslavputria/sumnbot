@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --env-file=.env index.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --test"
   },
   "dependencies": {
     "ioredis": "^5.10.1",
