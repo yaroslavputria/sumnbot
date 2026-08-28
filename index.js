@@ -3,26 +3,9 @@ import OpenAI from 'openai'
 import Redis from 'ioredis'
 import http from 'http'
 import { formatMessage, isUseful, chunkArray, commandArgs, replyLong, withHealthCheck } from './helpers.js'
-import {
-  fetchPage,
-  parseCatalog,
-  parseBanners,
-  parseProduct,
-  diffNew,
-  productUrl,
-  watchUntilInStock,
-  isBlocked,
-  CATALOG_URL,
-  HOME_URL,
-} from './nbu.js'
 
 // --- ENV VALIDATION ---
 const BOT_MODE = process.env.BOT_MODE === 'polling' ? 'polling' : 'webhook'
-
-// The shop refuses datacenter IPs — Render and GitHub Actions both get 403,
-// the same code returns 200 from a home connection. Off by default so we do
-// not hammer a host that is refusing us; turn on where the shop responds.
-const COINS_ENABLED = process.env.COINS_MONITOR === 'on'
 
 const requiredEnv = ['BOT_TOKEN', 'OPENAI_API_KEY', 'REDIS_URL', 'ALLOWED_CHATS']
 if (BOT_MODE === 'webhook') requiredEnv.push('WEBHOOK_DOMAIN')
@@ -60,30 +43,6 @@ const MAX_MESSAGES = 1000
 const CHUNK_SIZE = 50
 const MODEL = 'gpt-4o-mini'
 const TIMEZONE = 'Europe/Kyiv'
-
-// The shop announces a coin days ahead and only flips it to buyable at 10:00
-// on the day, so a slow sweep is enough to spot changes
-const COINS_POLL_INTERVAL = 4 * 60 * 60 * 1000
-const COINS_ONSALE_KEY = 'coins:onsale'
-const COINS_SUBS_KEY = 'coins:subs'
-const COINS_BANNERS_KEY = 'coins:banners'
-const COINS_WATCH_KEY = 'coins:watch'
-
-// A coin sells out within seconds of going live, so once a drop is close we
-// stop sweeping and poll that one product hard.
-const COINS_WATCH_POLL_INTERVAL = 30_000
-const COINS_BURST_INTERVAL = 2_000
-const COINS_BURST_WINDOW = 15 * 60 * 1000
-const COINS_PREWARN = 5 * 60 * 1000
-
-// The shop blocks datacenter IPs, so a deployed sweep can fail forever while
-// looking exactly like "no new coins". Say so once rather than going quiet.
-const COINS_DISABLED_NOTICE =
-  'Моніторинг монет вимкнено: магазин НБУ блокує запити з сервера (403). ' +
-  'Працює лише там, звідки магазин відповідає — вмикається через COINS_MONITOR=on.'
-const COINS_FAILURES_BEFORE_ALERT = 3
-let coinSweepFailures = 0
-let coinBlockReported = false
 
 // --- PROMPTS (з гумором) ---
 const SYSTEM_PROMPT = `
@@ -133,19 +92,6 @@ const FINAL_PROMPT = `
 - 5-10 пунктів
 - кожен пункт: суть + короткий дотепний коментар (за потреби)
 `
-
-// Same contract as REMIND_PARSE_PROMPT, but NBU sales open at 10:00, so a
-// bare date must not fall back to the reminder default of 09:00
-const COIN_WATCH_PARSE_PROMPT = `Ти парсиш дату і час старту продажу монети з українського тексту. Поточна дата і час у Києві будуть вказані в запиті.
-
-Розпізнавай відносні ("через 2 години"), конкретні дати ("15 вересня"), "завтра", "післязавтра", дні тижня.
-
-Якщо час доби НЕ вказано явно — використовуй 10:00, бо продаж монет НБУ стартує о 10:00.
-Конвертуй київський час у UTC (влітку UTC+3, взимку UTC+2).
-
-Відповідай ТІЛЬКИ валідним JSON без коментарів:
-{"datetime": "2026-09-15T07:00:00.000Z"}
-Якщо час незрозумілий: {"error": "час не розпізнано"}`
 
 const REMIND_PARSE_PROMPT = `Ти парсиш час з українського тексту. Поточна дата і час у Києві будуть вказані в запиті.
 
@@ -302,35 +248,6 @@ bot.command('ask', async (ctx) => {
   }
 })
 
-// --- TIME PARSING ---
-function localTime(at) {
-  return new Intl.DateTimeFormat('uk-UA', {
-    timeZone: TIMEZONE,
-    timeStyle: 'short',
-    dateStyle: 'short',
-  }).format(at)
-}
-
-// Shared by /remind and /coin_watch — same call shape, different defaults
-async function parseWhen(input, prompt) {
-  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: TIMEZONE,
-    dateStyle: 'full',
-    timeStyle: 'medium',
-  }).format(new Date())
-
-  const res = await openai.chat.completions.create({
-    model: MODEL,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: prompt },
-      { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
-    ],
-  })
-
-  return JSON.parse(res.choices[0].message.content)
-}
-
 // --- REMIND ---
 bot.command('remind', async (ctx) => {
   const input = commandArgs(ctx)
@@ -339,9 +256,23 @@ bot.command('remind', async (ctx) => {
     return ctx.reply('Вкажи час і текст. Наприклад: /remind через 30 хвилин випити таблетку')
   }
 
+  const kyivNow = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: TIMEZONE,
+    dateStyle: 'full',
+    timeStyle: 'medium',
+  }).format(new Date())
+
   let parsed
   try {
-    parsed = await parseWhen(input, REMIND_PARSE_PROMPT)
+    const res = await openai.chat.completions.create({
+      model: MODEL,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: REMIND_PARSE_PROMPT },
+        { role: 'user', content: `Поточний час у Києві: ${kyivNow}\nПовідомлення: ${input}` },
+      ],
+    })
+    parsed = JSON.parse(res.choices[0].message.content)
   } catch (err) {
     console.error('Failed to parse reminder time:', err)
     return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
@@ -364,7 +295,13 @@ bot.command('remind', async (ctx) => {
     return ctx.reply('Помилка при збереженні нагадування. Спробуй пізніше.')
   }
 
-  await ctx.reply(`Нагадаю о ${localTime(new Date(fireAt))}: ${parsed.text}`)
+  const localTime = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: TIMEZONE,
+    timeStyle: 'short',
+    dateStyle: 'short',
+  }).format(new Date(fireAt))
+
+  await ctx.reply(`Нагадаю о ${localTime}: ${parsed.text}`)
 })
 
 // --- ROAST ---
@@ -431,12 +368,6 @@ bot.command('help', (ctx) => {
     '/ask <питання> — коротка відповідь по суті\n' +
     '/remind <час + текст> — нагадування в зазначений час\n' +
     '/roast <username> [n] — безжальний роаст на основі повідомлень юзера\n' +
-    (COINS_ENABLED
-      ? '/coins — які монети зараз у продажу на coins.bank.gov.ua\n' +
-        '/coins_on, /coins_off — сповіщення коли монета зʼявляється у продажу\n' +
-        '/coin_watch <id|посилання> [коли] — стежити за стартом продажу монети\n' +
-        '/coin_unwatch — прибрати стеження\n'
-      : '') +
     '/help — показати цей список\n\n' +
     'Цей бот працює тільки для певного списку чатів. Щоб отримати доступ для свого чату — напиши @yputria.'
   )
@@ -467,309 +398,14 @@ setInterval(async () => {
   }
 }, 30_000)
 
-// --- COIN MONITOR ---
-
-// Returns the coins that appeared since the last sweep. The first run seeds
-// the set and reports nothing, otherwise it would announce the whole catalog.
-async function refreshCoinsOnSale() {
-  const items = parseCatalog(await fetchPage(CATALOG_URL))
-
-  if (!items.length) {
-    console.warn('Coin catalog looks empty, skipping this sweep')
-    return []
-  }
-
-  const known = await redis.smembers(COINS_ONSALE_KEY)
-  const { keys, seeding, fresh } = diffNew(known, items)
-
-  // replace rather than accumulate, so a coin selling out and returning
-  // later is reported again
-  const pipeline = redis.pipeline()
-  pipeline.del(COINS_ONSALE_KEY)
-  pipeline.sadd(COINS_ONSALE_KEY, keys)
-  await pipeline.exec()
-
-  if (seeding) console.log(`Seeded coin catalog with ${keys.length} products`)
-
-  return fresh
-}
-
-function formatCoin(coin) {
-  return `${coin.name}${coin.price ? ` — ${coin.price}` : ''}\n${coin.url}`
-}
-
-// A failing chat must not stop the rest, same reasoning as the reminder poller
-async function broadcastToSubscribers(text) {
-  const chatIds = await redis.smembers(COINS_SUBS_KEY)
-
-  for (const chatId of chatIds) {
-    try {
-      await bot.telegram.sendMessage(chatId, text)
-    } catch (err) {
-      console.error(`Failed to notify chat ${chatId}:`, err)
-    }
-  }
-}
-
-// New homepage banners are how a sale gets announced, days before the coin
-// actually becomes buyable
-async function findNewBanners() {
-  const banners = parseBanners(await fetchPage(HOME_URL))
-  if (!banners.length) return []
-
-  const known = await redis.smembers(COINS_BANNERS_KEY)
-  const { keys, seeding, fresh } = diffNew(known, banners, b => b.link)
-
-  // accumulate here: a banner rotating out of the slider and back in later
-  // is the same announcement and should not alert twice
-  await redis.sadd(COINS_BANNERS_KEY, keys)
-
-  if (seeding) console.log(`Seeded banners with ${keys.length} entries`)
-
-  return fresh
-}
-
-// Alerts go to everyone subscribed, plus whoever armed the watch even if
-// that chat never ran /coins_on
-async function notifyWatchers(chatId, text) {
-  const targets = new Set(await redis.smembers(COINS_SUBS_KEY))
-  if (chatId) targets.add(String(chatId))
-
-  for (const target of targets) {
-    try {
-      await bot.telegram.sendMessage(target, text)
-    } catch (err) {
-      console.error(`Failed to notify chat ${target}:`, err)
-    }
-  }
-}
-
-async function armWatch({ url, name, dropAt, chatId }) {
-  const member = JSON.stringify({ url, name, dropAt, chatId })
-  await redis.zadd(COINS_WATCH_KEY, Math.max(dropAt - COINS_PREWARN, Date.now()), member)
-}
-
-bot.command('coin_watch', async (ctx) => {
-  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
-
-  const args = commandArgs(ctx)
-  const [ref, ...rest] = args.split(/\s+/)
-  const url = productUrl(ref)
-
-  if (!url) {
-    return ctx.reply('Вкажи монету — посилання або id. Наприклад: /coin_watch 1183 завтра о 10:00')
-  }
-
-  const when = rest.join(' ').trim()
-  let dropAt = Date.now()
-
-  if (when) {
-    let parsed
-    try {
-      parsed = await parseWhen(when, COIN_WATCH_PARSE_PROMPT)
-    } catch (err) {
-      console.error('Failed to parse drop time:', err)
-      return ctx.reply('Не вдалося розпізнати час. Спробуй ще раз.')
-    }
-
-    if (parsed.error) {
-      return ctx.reply('Не зрозумів коли стартує продаж. Напиши, наприклад: "15 вересня" або "завтра о 10:00".')
-    }
-
-    dropAt = new Date(parsed.datetime).getTime()
-    if (isNaN(dropAt)) {
-      return ctx.reply('Невалідна дата. Спробуй ще раз.')
-    }
-  }
-
-  let name = ref
-  try {
-    name = parseProduct(await fetchPage(url))?.name || ref
-  } catch (err) {
-    console.error('Failed to look up watched coin:', err)
-  }
-
-  try {
-    await armWatch({ url, name, dropAt, chatId: ctx.chat.id })
-  } catch (err) {
-    console.error('Failed to save coin watch:', err)
-    return ctx.reply('Помилка при збереженні. Спробуй пізніше.')
-  }
-
-  await ctx.reply(
-    `Стежу за «${name}».\nСтарт: ${localTime(new Date(dropAt))}\n${url}\n\n` +
-    'Попереджу за 5 хвилин і напишу щойно кнопка купівлі стане активною.',
-  )
-})
-
-bot.command('coin_unwatch', async (ctx) => {
-  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
-
-  const chatId = ctx.chat.id
-  const members = await redis.zrange(COINS_WATCH_KEY, 0, -1)
-  const mine = members.filter(m => {
-    try {
-      return JSON.parse(m).chatId === chatId
-    } catch {
-      return false
-    }
-  })
-
-  if (!mine.length) {
-    return ctx.reply('Немає активних стеження за монетами.')
-  }
-
-  await redis.zrem(COINS_WATCH_KEY, ...mine)
-  await ctx.reply(`Прибрав ${mine.length} стеження.`)
-})
-
-bot.command('coins_on', async (ctx) => {
-  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
-
-  await redis.sadd(COINS_SUBS_KEY, String(ctx.chat.id))
-  await ctx.reply('Підписав цей чат на сповіщення про монети. Вимкнути — /coins_off')
-})
-
-bot.command('coins_off', async (ctx) => {
-  await redis.srem(COINS_SUBS_KEY, String(ctx.chat.id))
-  await ctx.reply('Більше не надсилатиму сповіщення про монети.')
-})
-
-bot.command('coins', async (ctx) => {
-  if (!COINS_ENABLED) return ctx.reply(COINS_DISABLED_NOTICE)
-
-  const statusMsg = await ctx.reply('Дивлюсь що в продажу...')
-
-  try {
-    const items = parseCatalog(await fetchPage(CATALOG_URL))
-
-    if (!items.length) {
-      return await ctx.reply('Зараз у продажу нічого немає.')
-    }
-
-    await replyLong(ctx, `Зараз у продажу (${items.length}):\n\n${items.map(formatCoin).join('\n\n')}`)
-  } catch (err) {
-    console.error('Failed to fetch coin catalog:', err)
-
-    await ctx.reply(isBlocked(err)
-      ? 'Магазин НБУ блокує запити з сервера (403). Каталог зараз недоступний для бота.'
-      : 'Не вдалося отримати каталог. Спробуй пізніше.')
-  } finally {
-    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {})
-  }
-})
-
-if (!COINS_ENABLED) {
-  console.log('Coin monitor disabled (COINS_MONITOR is not "on")')
-}
-
-// Both pollers stay dormant unless the shop is actually reachable from here
-if (COINS_ENABLED) setInterval(async () => {
-  try {
-    const fresh = await refreshCoinsOnSale()
-
-    coinSweepFailures = 0
-    if (coinBlockReported) {
-      coinBlockReported = false
-      await broadcastToSubscribers('✅ Доступ до магазину НБУ відновився, стежу далі.')
-    }
-
-    for (const coin of fresh) {
-      console.log(`Coin went on sale: ${coin.id} ${coin.name}`)
-      await broadcastToSubscribers(`🪙 Вже у продажу!\n\n${formatCoin(coin)}`)
-    }
-  } catch (err) {
-    coinSweepFailures++
-    console.error(`Coin sweep failed (${coinSweepFailures} in a row):`, err)
-
-    // report once, so a dead monitor cannot masquerade as a quiet one
-    if (coinSweepFailures >= COINS_FAILURES_BEFORE_ALERT && !coinBlockReported) {
-      coinBlockReported = true
-      await broadcastToSubscribers(
-        isBlocked(err)
-          ? '⚠️ Магазин НБУ блокує запити з сервера (403). Моніторинг монет не працює.'
-          : '⚠️ Не вдається отримати каталог монет. Моніторинг монет не працює.',
-      )
-    }
-  }
-
-  try {
-    for (const banner of await findNewBanners()) {
-      console.log(`New banner: ${banner.link}`)
-      await broadcastToSubscribers(`📣 Новий анонс на сайті НБУ:\n${banner.link}`)
-    }
-  } catch (err) {
-    console.error('Banner sweep failed:', err)
-  }
-}, COINS_POLL_INTERVAL)
-
-// Claim-then-act, same shape as the reminder poller
-if (COINS_ENABLED) setInterval(async () => {
-  try {
-    const due = await redis.zrangebyscore(COINS_WATCH_KEY, 0, Date.now())
-
-    for (const member of due) {
-      const claimed = await redis.zrem(COINS_WATCH_KEY, member)
-      if (!claimed) continue
-
-      const watch = JSON.parse(member)
-
-      // deliberately not awaited: a burst runs for minutes and must not
-      // block the next tick or another coin's window
-      runWatch(watch).catch(err => console.error('Coin watch failed:', err))
-    }
-  } catch (err) {
-    console.error('Coin watch poller error:', err)
-  }
-}, COINS_WATCH_POLL_INTERVAL)
-
-async function runWatch(watch) {
-  const { url, name, dropAt, chatId } = watch
-
-  await notifyWatchers(
-    chatId,
-    `⏰ «${name}» стартує о ${localTime(new Date(dropAt))}.\n${url}\n\n` +
-    'Відкрий сторінку зараз — на старті є лише кілька секунд.',
-  )
-
-  // arming late still gets a full window rather than an instant give-up
-  const deadline = Math.max(dropAt, Date.now()) + COINS_BURST_WINDOW
-  const { product, polls, failures } = await watchUntilInStock(url, {
-    deadline,
-    intervalMs: COINS_BURST_INTERVAL,
-  })
-
-  console.log(`Burst watch on ${url}: ${polls} polls, ${failures} failures, ${product ? 'hit' : 'timed out'}`)
-
-  if (product) {
-    return notifyWatchers(
-      chatId,
-      `🔥 «${name}» У ПРОДАЖУ!\n${product.price ? `${product.price} ${product.currency}\n` : ''}${url}`,
-    )
-  }
-
-  await notifyWatchers(chatId, `Не дочекався старту «${name}». Перевір вручну: ${url}`)
-}
-
 // --- START ---
 const PORT = Number(process.env.PORT) || 3000
 
-// Coin commands stay out of the autocomplete menu while the monitor is off,
-// rather than offering something that can only answer with an error
 await bot.telegram.setMyCommands([
   { command: 'summary', description: 'Самарі останніх N повідомлень (напр. /summary 100)' },
   { command: 'ask', description: 'Коротка відповідь на питання (напр. /ask що таке JWT?)' },
   { command: 'remind', description: 'Нагадування (напр. /remind о 18:00 стендап)' },
   { command: 'roast', description: 'Роаст юзера за його повідомленнями (напр. /roast @username)' },
-  ...(COINS_ENABLED
-    ? [
-      { command: 'coins', description: 'Які монети зараз у продажу на coins.bank.gov.ua' },
-      { command: 'coins_on', description: 'Підписати чат на сповіщення про монети' },
-      { command: 'coins_off', description: 'Відписати чат від сповіщень про монети' },
-      { command: 'coin_watch', description: 'Стежити за монетою (напр. /coin_watch 1183 завтра о 10:00)' },
-      { command: 'coin_unwatch', description: 'Прибрати стеження за монетами' },
-    ]
-    : []),
   { command: 'help', description: 'Список доступних команд' },
 ])
 

@@ -58,8 +58,8 @@ export function commandArgs(ctx) {
 }
 
 // Render's free tier sleeps after ~15 minutes without traffic, and the
-// in-process pollers sleep with it. An external pinger hits /health to keep
-// the instance awake so reminders and coin alerts stay on time.
+// in-process reminder poller sleeps with it. An external pinger hits /health
+// to keep the instance awake so reminders fire on time.
 export function withHealthCheck(handler) {
   return (req, res) => {
     if (req.url === '/health') {

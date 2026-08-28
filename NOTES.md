@@ -3,25 +3,26 @@
 Things found while reviewing the codebase that are deliberately not
 fixed. Ordered roughly by how likely they are to bite.
 
-## Render's free tier sleeps — keep-alive is required, not optional
+## Render's free tier sleeps — reminders fire late
 
 Free Render web services spin down after ~15 minutes without inbound
-traffic. All three pollers are in-process `setInterval`s, so **none of
-them run while the instance is asleep**.
+traffic. The reminder poller is an in-process `setInterval`
+(`index.js:377`), so **it does not run while the instance is asleep**.
+A reminder due at 03:00 in a quiet chat fires whenever the next message
+wakes the service, not at 03:00.
 
 `GET /health` exists for this: point a free external pinger
-(cron-job.org, UptimeRobot) at it every 5 minutes. **Without that pinger
-the coin monitor is worthless** — a 10:00 drop in a quiet overnight chat
-is exactly the case the instance will be asleep for, and reminders stay
-late too.
+(cron-job.org, UptimeRobot) at it every 5 minutes and the instance stays
+awake, so the poller keeps running. **The endpoint alone does nothing —
+the pinger is the part that fixes it**, and it is not set up.
 
-This uses roughly 730 of Render's 750 free instance-hours per month, so
+That costs roughly 730 of Render's 750 free instance-hours per month, so
 there is no room for a second always-on service on the same account.
 
 ## Reminder delivery is at-most-once
 
 The poller claims each member with `zrem` before sending
-(`index.js:455`). If the send then fails, that reminder is gone — no
+(`index.js:386`). If the send then fails, that reminder is gone — no
 retry. This is intentional: the alternative is a retry queue that loops
 forever on a permanently blocked chat. Failures are logged.
 
@@ -37,70 +38,17 @@ timeouts. The `ALLOWED_CHATS` whitelist is the only abuse control, and
 chat can loop `/summary 1000` — 21 model calls each — against the
 OpenAI balance.
 
-## The coin monitor is shelved — the shop blocks datacenter IPs
-
-**`COINS_MONITOR` is off by default and the feature does not work in
-production.** The shop refuses requests by where they come from, not by
-what they send. The same code and headers, measured 2026-08-27:
-
-| Origin | `coins.bank.gov.ua` | `bank.gov.ua` |
-|---|---|---|
-| Home connection (CDN reports country `UA`) | 200, 68KB | 200 |
-| Render | 403 | — |
-| GitHub Actions runner (Azure) | 403 | — |
-| Other datacenter fetchers | 403 | 403 |
-
-Only `/robots.txt` is exempt from the shield; every path carrying data
-403s. So there is no unblocked endpoint to fall back to, and no free
-always-on host that the shop accepts.
-
-What was **not** determined: whether the rule is "non-Ukraine" or
-"datacenter ASN". Both test vantages were non-UA datacenters, so they
-cannot be told apart. A Ukrainian VPS would distinguish them and might
-make the feature work outright — untested, and it costs money.
-
-Not done deliberately: routing through a residential proxy to look like
-a home connection. That is circumventing an access control the operator
-put in place, rather than being a polite client.
-
-The code, fixtures and tests are all kept. Set `COINS_MONITOR=on`
-wherever the shop actually answers and the feature runs as built.
-
-## Quiet failure is ambiguous by design
-
-Fetch failures are logged, never pushed to the chat, so a shield change
-degrades into silence rather than noise. The sweep does report once
-after three consecutive failures and again when access returns, which
-covers the common case — but between those, **silence still looks
-identical to "no new coins"**. A periodic "monitor alive" heartbeat
-would remove the ambiguity and is not implemented.
-
-The fixtures under `fixtures/` pin the markup the shop served in August
-2026. If the site is redesigned, `npm test` fails — that is the intended
-early warning.
-
-## The drop alert is a few seconds behind, by construction
-
-`watchUntilInStock` polls every 2s and Telegram delivery adds its own
-latency, so the "it is live" message lands roughly 2-3s after a coin
-becomes buyable. Against a window measured in seconds that may be too
-late to win on its own. The five-minute heads-up is the part that
-actually helps; the live ping is confirmation.
-
-Polling faster would shrink the gap slightly and be markedly more
-aggressive against the shield. Not worth it.
-
 ## Prompt injection
 
 Stored messages are concatenated raw into the user role at
-`index.js:240`, `index.js:257` and `index.js:412` with no delimiting or
+`index.js:186`, `index.js:203` and `index.js:349` with no delimiting or
 escaping. A group member can post text that the summariser or roaster
 reads as instructions. Low stakes for a private chat bot, but it is a
 real channel.
 
 ## Smaller things
 
-- `ALLOWED_CHATS` is parsed once at boot (`index.js:37`) — changing the
+- `ALLOWED_CHATS` is parsed once at boot (`index.js:20`) — changing the
   allowlist needs a restart.
 - `/roast` takes a single whitespace-delimited token as the username,
   but users without an `@username` are stored as `"First Last"`, so they

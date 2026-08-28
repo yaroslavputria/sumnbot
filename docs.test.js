@@ -2,9 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-// CLAUDE.md and NOTES.md cite index.js line numbers. Those rot silently every
-// time the file grows — twice already — leaving anchors pointing into prompt
-// text. These tests turn that into a test failure instead of stale docs.
+// CLAUDE.md and NOTES.md cite index.js line numbers. They went stale twice
+// while the coin monitor was being built — at one point pointing into
+// Ukrainian prompt text rather than the code they described. Silently wrong
+// docs are worse than none, so drift is a test failure now.
 const src = readFileSync(new URL('./index.js', import.meta.url), 'utf8').split(/\r?\n/)
 const docs = ['CLAUDE.md', 'NOTES.md'].map(name => [
   name,
@@ -36,16 +37,16 @@ test('every cited line exists and is not blank', () => {
 // The anchors that carry real meaning — if these drift, the docs mislead
 const pinned = {
   'CLAUDE.md': [
-    [168, 'bot.use('],           // logging middleware
-    [174, 'bot.use('],           // whitelist
-    [188, "bot.on('text'"],      // persistence
-    [192, 'isUseful'],           // the next() that lets commands run
-    [446, 'setInterval'],        // reminder poller
-    [759, 'setMyCommands'],
+    [114, 'bot.use('],          // logging middleware
+    [120, 'bot.use('],          // chat whitelist
+    [134, "bot.on('text'"],     // text persistence
+    [138, 'isUseful'],          // the next() that lets commands run at all
+    [377, 'setInterval'],       // reminder poller
+    [404, 'setMyCommands'],
   ],
   'NOTES.md': [
-    [455, 'zrem'],               // the atomic reminder claim
-    [37, 'ALLOWED_CHATS'],       // parsed once at boot
+    [386, 'zrem'],              // the atomic reminder claim
+    [20, 'ALLOWED_CHATS'],      // parsed once at boot
   ],
 }
 

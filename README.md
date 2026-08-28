@@ -10,40 +10,20 @@ A private Telegram bot for group chats. Summarizes conversations, answers questi
 | `/ask <question>` | Get a brief, essential answer to any question |
 | `/remind <time + text>` | Set a reminder — natural language, e.g. `через 30 хвилин` or `о 18:00` |
 | `/roast <username> [n]` | Hardcore roast of a user based on their last N messages (default 50) |
-| `/coins` | What is currently on sale at [coins.bank.gov.ua](https://coins.bank.gov.ua/) |
-| `/coins_on`, `/coins_off` | Subscribe this chat to coin alerts |
-| `/coin_watch <id\|url> [when]` | Watch a coin and alert the moment it becomes buyable, e.g. `/coin_watch 1183 завтра о 10:00` |
-| `/coin_unwatch` | Drop this chat's watches |
 | `/help` | Show available commands |
 
 ## Stack
 
 - [Telegraf](https://telegraf.js.org/) — Telegram bot framework
 - [OpenAI](https://platform.openai.com/) — GPT-4o-mini for summaries, Q&A, roasts, and time parsing
-- [Redis](https://redis.io/) — stores message history, reminders and coin-monitor state
-- Webhook-based in production, long polling for local development
-
-## Coin monitor
-
-Watches the NBU numismatic shop and alerts when a coin actually becomes
-buyable — not when it is announced. A coin is usually listed in the catalog
-but disabled until its sale opens at 10:00, so `/coin_watch` polls that
-product hard around the drop and warns five minutes ahead.
-
-**Disabled by default.** The shop blocks datacenter IPs, so it returns 403 on
-Render and on GitHub Actions while working fine from a home connection. Set
-`COINS_MONITOR=on` to enable it wherever the shop responds; the coin commands
-are hidden from the menu while it is off.
-
-When enabled it also wants an external pinger on `/health` (cron-job.org,
-UptimeRobot) to stop Render's free tier sleeping through a drop.
+- [Redis](https://redis.io/) — stores message history and reminders (sorted set)
+- Webhook-based, no polling
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
 | `BOT_MODE` | `polling` for local dev, `webhook` (default) for production |
-| `COINS_MONITOR` | `on` enables the coin monitor (off by default — see below) |
 | `BOT_TOKEN` | Telegram bot token |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `REDIS_URL` | Redis connection URL |
